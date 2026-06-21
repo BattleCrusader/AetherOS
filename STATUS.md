@@ -19,6 +19,16 @@
 - [x] Standalone binary compilation pipeline (Makefile + embed_binaries.py)
 - [x] Standalone commands: help, ls, echo, reboot (compiled as --target binary)
 - [x] libaether.ae: userspace runtime library (syscall wrappers)
+- [x] **Shell prompt fix**: removed redundant `return 0` from asm-block functions
+- [x] **Compiler fix**: suppress default return when asm block contains `ret`
+- [x] **Triple fault fix**: added `cli` before kernel call in boot.ae — hardware timer IRQ0 was firing while polling serial, causing GPF → double fault → triple fault with no IDT 🟢
+- [x] **serial_newline() fixed**: was passing args in `al` instead of `dil` (SysV ABI) — caused garbage `??` output 🟢
+- [x] **Backspace fix**: handles both 0x08 (BS) and 0x7F (DEL), sends ANSI erase sequence ESC[D space ESC[D 🟢
+- [x] **exec_cmd first-word extraction**: extracts command name from input before lookup — "echo hello world" now matches "echo" 🟢
+- [x] **Inline command handlers**: help, ls, echo, reboot, shutdown, clear, mem registered directly in kernel 🟢
+- [x] **Shutdown command**: tries ACPI PM1a, QEMU-specific, and Bochs BDA methods 🟢
+- [x] **Debug scaffolding cleaned up**: removed kernel_c.c, entry_trampoline.asm, minimal_kernel.asm, minimal2.asm, minimal3.asm 🟢
+- [x] **Shell now boots, shows prompt, blocks at read_line, and responds to input** 🟢
 - [ ] Binary loading from disk (ATA PIO disk read in kernel)
 - [ ] Module verification (ABI checks, capability grants)
 - [ ] PATH configurable from env variable
@@ -81,9 +91,11 @@
 ## Known Technical Decisions
 
 - **Kernel language**: Aether (`.ae`), compiled with `aether --target kernel`
-- **Boot chain**: NASM flat binaries (stage1.asm, stage2.asm, boot.S) — these run before long mode, can't be Aether
+- **Boot chain**: NASM flat binaries (stage1.ae, stage2.ae, boot.ae) — these run before long mode, can't be Aether
 - **Output**: ELF64 flat binary for kernel; Mach-O 64 (macOS) or native ELF64 (Linux) for host-native
 - **Assembly**: NASM syntax only, inline asm blocks in Aether use SysV ABI registers (rdi=arg1, rsi=arg2)
+- **Asm block rule**: Do NOT put `leave; ret` inside asm blocks — the compiler's function epilogue handles returns. The compiler now detects `ret` inside asm blocks and suppresses the default return emission.
+- **Boot triple fault fix**: `cli` must be emitted before calling kernel from boot.ae — no IDT is set up, so any interrupt (e.g. hardware timer IRQ0) causes GPF → double fault → triple fault → CPU reset
 - **Memory model**: Stack-first with escape analysis; explicit `heap` keyword
 - **Exceptions**: Tagged union return encoding, no personality/unwind tables
 - **Generics**: Monomorphization (zero-cost, like Rust/C++)
@@ -92,7 +104,7 @@
 - **Host native**: Multi-backend codegen; host syscall ABI instead of 0x5000 table; `aether run` for one-step compile+execute
 - **Universal binaries**: `--target universal` for multi-arch ELF with CPU detection trampoline
 - **Kernel memory layout**: Stage1 at 0x7C00, Stage2 at 0x7E00, page tables at 0x6000, module registry at 0x4000, syscall page at 0x5000, kernel at 0x1000000, binary exec at 0x2000000, module slots at 0x2100000
-- **Boot chain**: BIOS → stage1.asm (INT 13h) → stage2.asm (INT 13h, protected mode copy) → boot.S (GDT, PAE, long mode) → kernel_main
+- **Boot chain**: BIOS → stage1.ae (INT 13h) → stage2.ae (INT 13h, protected mode copy) → boot.ae (GDT, PAE, long mode) → kernel_main
 - **Bitmap address**: 0xD000 (after page tables at 0x6000-0xA000, before stack at 0xC000)
 - **No floating point in kernel**: `-mno-sse -mno-mmx -mno-80387`
 - **No libc**: `-nostdlib -ffreestanding`

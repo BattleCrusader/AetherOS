@@ -98,6 +98,9 @@ long_mode_entry:
         mov al, '>'
         out dx, al
 
+        ; Disable interrupts before calling kernel (no IDT set up yet)
+        cli
+
         ; Call kernel_main at 0x1004000
         mov rax, 0x1004000
         call rax

@@ -6,10 +6,23 @@ Phase 2 enables standalone ELF binaries in `/bin/`, module loading from `/lib/en
 ## Tasks
 
 ### P02.01 — Standalone Commands (--target binary)
-- [ ] Create `/bin/help.ae` — standalone help command
-- [ ] Create `/bin/ls.ae` — standalone ls command
-- [ ] Create `/bin/echo.ae` — standalone echo command
-- [ ] Create `/bin/reboot.ae` — standalone reboot command
+- [x] Create `/bin/help.ae` — standalone help command
+- [x] Create `/bin/ls.ae` — standalone ls command
+- [x] Create `/bin/echo.ae` — standalone echo command
+- [x] Create `/bin/reboot.ae` — standalone reboot command
+- [x] Build system: compile all /bin/ commands and embed in disk image
+- [x] Boot FS: populate /bin/ directory with compiled ELF binaries
+- [x] **Shell prompt fix**: removed redundant `return 0` from asm-block functions
+- [x] **Compiler fix**: suppress default return when asm block contains `ret`
+- [x] **Triple fault fix**: added `cli` before kernel call in boot.ae — hardware timer IRQ0 was firing while polling serial, causing GPF → double fault → triple fault with no IDT 🟢
+- [x] **serial_newline() fixed**: was passing args in `al` instead of `dil` (SysV ABI) — caused garbage `??` output 🟢
+- [x] **Backspace fix**: handles both 0x08 (BS) and 0x7F (DEL), sends ANSI erase sequence ESC[D space ESC[D 🟢
+- [x] **exec_cmd first-word extraction**: extracts command name from input before lookup — "echo hello world" now matches "echo" 🟢
+- [x] **Inline command handlers**: help, ls, echo, reboot, shutdown, clear, mem registered directly in kernel 🟢
+- [x] **Shutdown command**: tries ACPI PM1a, QEMU-specific, and Bochs BDA methods 🟢
+- [x] **Debug scaffolding cleaned up**: removed kernel_c.c, entry_trampoline.asm, minimal_kernel.asm, minimal2.asm, minimal3.asm 🟢
+- [x] **Shell now boots, shows prompt, and waits for input** 🟢
+- [x] **Shell accepts commands and loops correctly** 🟢
 - [ ] Create `/bin/shutdown.ae` — standalone shutdown command
 - [ ] Create `/bin/cat.ae` — standalone cat command
 - [ ] Create `/bin/clear.ae` — standalone clear command
@@ -21,9 +34,6 @@ Phase 2 enables standalone ELF binaries in `/bin/`, module loading from `/lib/en
 - [ ] Create `/bin/date.ae` — standalone date/time command
 - [ ] Create `/bin/booleval.ae` — standalone boolean evaluation command
 - [ ] Create `/bin/qubit.ae` — standalone qubit command
-- [ ] Create `/bin/help.ae` — standalone help command
-- [ ] Build system: compile all /bin/ commands and embed in disk image
-- [ ] Boot FS: populate /bin/ directory with compiled ELF binaries
 - [ ] Test: each command runs correctly in QEMU
 
 ### P02.02 — Module Loading
