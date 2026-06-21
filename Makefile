@@ -8,6 +8,7 @@ QEMU      = qemu-system-x86_64
 BUILD     = build
 SRC_BOOT  = src/boot
 SRC_KERN  = src/kernel
+SRC_BIN   = src/bin
 TOOLS     = tools
 
 # Stage binaries (flat binary boot sectors)
@@ -17,16 +18,21 @@ BOOT_BIN   = $(BUILD)/boot.bin
 
 # Kernel Aether source → ELF
 KERNEL_AE  = $(SRC_KERN)/main.ae
+KERNEL_EMBEDDED = $(SRC_KERN)/embedded_bins.ae
 KERNEL_ELF = $(BUILD)/aether.elf
 KERNEL_BIN = $(BUILD)/aether.bin
 
 # Final combined kernel (boot.bin padded to 16KB + aether.bin)
 KERNEL_COMBINED = $(BUILD)/kernel.bin
 
+# Standalone binaries (exclude libaether.ae — it's a library, not a binary)
+BIN_SRCS   = $(filter-out $(SRC_BIN)/libaether.ae,$(wildcard $(SRC_BIN)/*.ae))
+BIN_ELFS   = $(patsubst $(SRC_BIN)/%.ae,$(BUILD)/bin/%.elf,$(BIN_SRCS))
+
 # Disk image
 DISK_IMG   = $(BUILD)/aether.img
 
-.PHONY: all clean run run-graphic test
+.PHONY: all clean run run-graphic test bins
 
 all: $(DISK_IMG)
 
@@ -55,12 +61,22 @@ $(KERNEL_BIN): $(KERNEL_ELF)
 $(KERNEL_COMBINED): $(BOOT_BIN) $(KERNEL_BIN)
 	python3 tools/pad_and_combine.py --boot $(BOOT_BIN) --kernel $(KERNEL_BIN) --output $@
 
+# Standalone binaries
+$(BUILD)/bin:
+	mkdir -p $(BUILD)/bin
+
+$(BUILD)/bin/%.elf: $(SRC_BIN)/%.ae | $(BUILD)/bin
+	$(AETHER) --target binary -O0 $< -o $@
+
+bins: $(BIN_ELFS)
+
 # Build disk image
-$(DISK_IMG): $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_COMBINED)
+$(DISK_IMG): $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_COMBINED) $(BIN_ELFS)
 	python3 tools/build_image.py \
 		--stage1 $(STAGE1_BIN) \
 		--stage2 $(STAGE2_BIN) \
 		--kernel $(KERNEL_COMBINED) \
+		--bin-dir $(BUILD)/bin \
 		--output $@
 
 # Run in QEMU (headless, serial console)
@@ -75,7 +91,7 @@ run-graphic: $(DISK_IMG)
 
 # Clean build artifacts
 clean:
-	rm -rf $(BUILD)/*.o $(BUILD)/*.bin $(BUILD)/*.elf $(BUILD)/*.img
+	rm -rf $(BUILD)/*.o $(BUILD)/*.bin $(BUILD)/*.elf $(BUILD)/*.img $(BUILD)/bin
 
 # Full rebuild
 rebuild: clean all

@@ -1,55 +1,57 @@
 # Phase 2 — Execution
 
-## Goal
-Move from built-in shell commands to standalone ELF binaries loaded at 0x2000000. Every command becomes a `.elf` file in `/bin/`, resolved via PATH, loaded, executed, and discarded.
+## Overview
+Phase 2 enables standalone ELF binaries in `/bin/`, module loading from `/lib/enabled/`, and pipe/redirect support in the shell. The kernel already has ELF64 loader, PATH resolution, and exec_binary — this phase builds the actual commands and completes the module system.
 
 ## Tasks
 
-### P02.01 — ELF64 Loader
-- [ ] Implement `elf_load(addr: u64): u64` — parse ELF64 header, validate magic, load segments
-- [ ] Handle `PT_LOAD` segments: copy from source to target virtual address
-- [ ] Handle `PT_NULL` / `PT_GNU_STACK` / `PT_GNU_RELRO` — skip
-- [ ] Return entry point address, or 0 on error
-- [ ] Test with a known-good ELF64 binary
+### P02.01 — Standalone Commands (--target binary)
+- [ ] Create `/bin/help.ae` — standalone help command
+- [ ] Create `/bin/ls.ae` — standalone ls command
+- [ ] Create `/bin/echo.ae` — standalone echo command
+- [ ] Create `/bin/reboot.ae` — standalone reboot command
+- [ ] Create `/bin/shutdown.ae` — standalone shutdown command
+- [ ] Create `/bin/cat.ae` — standalone cat command
+- [ ] Create `/bin/clear.ae` — standalone clear command
+- [ ] Create `/bin/uptime.ae` — standalone uptime command
+- [ ] Create `/bin/ps.ae` — standalone process list command
+- [ ] Create `/bin/modules.ae` — standalone module list command
+- [ ] Create `/bin/mem.ae` — standalone memory info command
+- [ ] Create `/bin/ver.ae` — standalone version command
+- [ ] Create `/bin/date.ae` — standalone date/time command
+- [ ] Create `/bin/booleval.ae` — standalone boolean evaluation command
+- [ ] Create `/bin/qubit.ae` — standalone qubit command
+- [ ] Create `/bin/help.ae` — standalone help command
+- [ ] Build system: compile all /bin/ commands and embed in disk image
+- [ ] Boot FS: populate /bin/ directory with compiled ELF binaries
+- [ ] Test: each command runs correctly in QEMU
 
-### P02.02 — Binary Exec
-- [ ] Implement `exec_binary(path: string)` — open file, read into buffer, elf_load, call entry
-- [ ] Allocate scratch buffer at BIN_BASE (0x2000000) for loading
-- [ ] Call entry point with SysV ABI (rdi=argc, rsi=argv)
-- [ ] On return, zero the exec space and return to shell
-- [ ] Handle errors gracefully (file not found, bad ELF, exec failure)
+### P02.02 — Module Loading
+- [ ] Module loader: find .ko files in /lib/enabled/
+- [ ] Module loader: load ELF .ko to MOD_SLOT
+- [ ] Module loader: call mod_init
+- [ ] Module registry: reg_cmd, reg_hook, find_cmd, find_hook, unreg_cmd
+- [ ] Module verification: ABI checks, capability grants
+- [ ] Create sample module: qubit.ko
+- [ ] Build system: compile modules and embed in disk image
+- [ ] Boot FS: populate /lib/enabled/ with compiled modules
+- [ ] Test: module loads and registers commands correctly
 
-### P02.03 — PATH Resolution
-- [ ] Implement `path_resolve(name: string): string` — search `/bin/` for `name.elf`
-- [ ] Default PATH: `/bin`
-- [ ] Shell uses `path_resolve` instead of built-in command table
-- [ ] Remove built-in commands from shell (help, ls, echo, reboot become standalone binaries)
+### P02.03 — Pipe/Redirect Support
+- [ ] Pipe syntax: `cmd1 | cmd2`
+- [ ] Redirect syntax: `cmd > file`, `cmd < file`
+- [ ] Shell parser for pipe/redirect
+- [ ] Implementation: buffer-based pipe between commands
+- [ ] Test: pipe and redirect work correctly
 
-### P02.04 — Standalone Commands
-- [ ] Write `help.ae` — prints available commands
-- [ ] Write `ls.ae` — lists `/bin/` directory
-- [ ] Write `echo.ae` — prints arguments
-- [ ] Write `reboot.ae` — sends 0xFE to 0x64 (PS/2 reset)
-- [ ] Write `shutdown.ae` — sends shutdown via ACPI or triple fault
-- [ ] Write `cat.ae` — reads file and prints it
-- [ ] Build all with `aether --target binary`
-- [ ] Inject into disk image at `/bin/`
+### P02.04 — PATH Configuration
+- [ ] PATH env variable support
+- [ ] Configurable from boot config
+- [ ] Default PATH: /bin
+- [ ] Test: PATH override works
 
-### P02.05 — Module Loading
-- [ ] Implement `module_load(path: string): u64` — load .ko ELF to MOD_SLOT
-- [ ] Call `mod_init` entry point
-- [ ] Module registers commands via registry at 0x4000
-- [ ] Shell's `exec_cmd` checks module registry before falling through
-- [ ] Build a test .ko module
-
-### P02.06 — Pipe/Redirect
-- [ ] Parse `|` and `>` in shell command line
-- [ ] Implement pipe buffer (shared memory between binaries)
-- [ ] Implement file redirect (> file)
-- [ ] Chain piped commands
-
-### P02.07 — Verification
-- [ ] Full boot test: shell → ls → echo hello → cat file → reboot
-- [ ] Module load test
-- [ ] Pipe test
-- [ ] Error handling test (bad path, bad ELF, out of memory)
+### P02.05 — Verification & Cleanup
+- [ ] Full test suite for Phase 2
+- [ ] Update STATUS.md
+- [ ] Update knowledge base
+- [ ] Clean up any dead code

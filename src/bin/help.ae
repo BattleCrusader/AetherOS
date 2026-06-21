@@ -1,0 +1,72 @@
+# Aether OS — help command
+# Standalone binary: lists available commands
+
+# Syscall wrappers
+func putc(c: u8) {
+    asm {
+        mov rax, 0x5000
+        call rax
+    }
+}
+
+func puts(s: string) {
+    asm {
+        mov rax, 0x5008
+        call rax
+    }
+}
+
+func exit_bin() {
+    asm {
+        mov rax, 0x5038
+        call rax
+    }
+}
+
+func newline() {
+    asm {
+        mov al, 0x0D
+        mov dx, 0x3F8
+        out dx, al
+        mov al, 0x0A
+        mov dx, 0x3F8
+        out dx, al
+    }
+}
+
+func main(): u64 {
+    puts("Available commands:")
+    newline()
+    puts("  help     - Show this help")
+    newline()
+    puts("  ls       - List directory contents")
+    newline()
+    puts("  echo     - Echo text")
+    newline()
+    puts("  reboot   - Reboot the system")
+    newline()
+    puts("  shutdown - Shutdown the system")
+    newline()
+    puts("  cat      - Display file contents")
+    newline()
+    puts("  clear    - Clear the screen")
+    newline()
+    puts("  uptime   - Show system uptime")
+    newline()
+    puts("  ps       - List processes")
+    newline()
+    puts("  modules  - List loaded modules")
+    newline()
+    puts("  mem      - Show memory info")
+    newline()
+    puts("  ver      - Show version info")
+    newline()
+    puts("  date     - Show date/time")
+    newline()
+    puts("  booleval - Evaluate a boolean expression")
+    newline()
+    puts("  qubit    - Quantum state simulation")
+    newline()
+    exit_bin()
+    return 0
+}
