@@ -1,0 +1,144 @@
+; Aether OS — Stage 2 Loader
+; Loads kernel from disk via INT 13h extensions (LBA), copies to 0x1000000,
+; then jumps to boot.S for long mode setup
+
+[org 0x7E00]
+[bits 16]
+
+start:
+    ; Set up segments
+    xor ax, ax
+    mov ds, ax
+    mov es, ax
+    mov ss, ax
+    mov sp, 0x7E00
+
+    ; Save boot drive
+    mov [boot_drive], dl
+
+    mov si, msg_loading
+    call print_string
+
+    ; Load kernel from disk using INT 13h extensions (LBA)
+    ; Kernel starts at LBA sector 34, size = 38 sectors
+    ; Load to temporary buffer at 0x6000:0x0000 = 0x60000
+
+    mov si, msg_reading
+    call print_string
+
+    ; Set up DAP for INT 13h extended read
+    ; Read 49 sectors starting at LBA 34 to buffer 0x6000:0x0000
+    mov word [dap.sectors], 49
+    mov word [dap.offset], 0x0000
+    mov word [dap.segment], 0x6000
+    mov dword [dap.lba], 34
+    mov dword [dap.lba + 4], 0
+
+    mov si, dap
+    mov ah, 0x42        ; extended read
+    mov dl, [boot_drive]
+    int 0x13
+    jc disk_error
+
+    mov si, msg_done
+    call print_string
+
+    ; Copy kernel from 0x60000 to 0x1000000
+    ; We're in real mode, so we need to use segment:offset addressing
+    ; Source: 0x6000:0x0000 = 0x60000
+    ; Dest:   0x1000:0x0000 = 0x10000 (but we need 0x1000000)
+    ; We'll use unreal mode or just copy in protected mode
+
+    ; Load GDT for protected mode
+    lgdt [gdt_desc]
+
+    ; Enable A20 gate
+    in al, 0x92
+    or al, 2
+    out 0x92, al
+
+    ; Switch to protected mode
+    mov eax, cr0
+    or eax, 1
+    mov cr0, eax
+
+    ; Far jump to flush pipeline
+    jmp 0x08:pmode_entry
+
+[bits 32]
+pmode_entry:
+    ; Set up segments
+    mov ax, 0x10
+    mov ds, ax
+    mov es, ax
+    mov ss, ax
+    mov esp, 0x7E00
+
+    ; Write test char to serial to verify we're in protected mode
+    mov dx, 0x3F8
+    mov al, 'P'
+    out dx, al
+    mov al, ':'
+    out dx, al
+
+    ; Copy kernel from 0x60000 to 0x1000000
+    ; Source: 0x60000, Dest: 0x1000000, Size: 49 sectors = 25088 bytes
+    mov esi, 0x60000
+    mov edi, 0x1000000
+    mov ecx, 6272       ; 25088 bytes / 4 = 6272 dwords
+    cld
+    rep movsd
+
+    ; Jump to boot.S (long mode setup) at 0x1000000
+    jmp 0x08:0x1000000
+
+disk_error:
+    mov si, msg_error
+    call print_string
+    mov ah, 0
+    int 0x16
+    int 0x19
+
+; Print string (16-bit real mode)
+print_string:
+    push ax
+    mov ah, 0x0E
+.loop:
+    lodsb
+    or al, al
+    jz .done
+    int 0x10
+    jmp .loop
+.done:
+    pop ax
+    ret
+
+; Data
+align 4
+dap:
+    .size:    db 0x10   ; size of DAP
+    .reserved: db 0
+    .sectors: dw 49     ; sectors to read
+    .offset:  dw 0x0000 ; buffer offset
+    .segment: dw 0x6000 ; buffer segment
+    .lba:     dq 34     ; start LBA
+
+boot_drive: db 0
+msg_loading: db "Aether OS: Loading kernel...", 0x0D, 0x0A, 0
+msg_reading: db "Reading kernel from disk...", 0x0D, 0x0A, 0
+msg_done:    db "Kernel loaded, jumping to long mode setup...", 0x0D, 0x0A, 0
+msg_error:   db "Disk error loading kernel!", 0x0D, 0x0A, 0
+
+; GDT for protected mode
+gdt:
+    dq 0x0000000000000000  ; null descriptor
+    dq 0x00CF9A000000FFFF  ; code segment (base=0, limit=4GB, ring 0)
+    dq 0x00CF92000000FFFF  ; data segment (base=0, limit=4GB, ring 0)
+gdt_end:
+
+gdt_desc:
+    dw gdt_end - gdt - 1
+    dd gdt
+
+; Pad to fill allocated sectors (32 sectors = 16KB)
+times 16384 - ($ - $$) db 0

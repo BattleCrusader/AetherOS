@@ -1,1 +1,13 @@
+# Aether OS — Build artifacts
+build/
+*.o
+*.bin
+*.elf
+*.img
+
+# macOS
 .DS_Store
+
+# Python
+__pycache__/
+*.pyc
