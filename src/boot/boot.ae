@@ -98,12 +98,6 @@ long_mode_entry:
         mov al, '>'
         out dx, al
 
-        ; Clear BSS (from __bss_start to __bss_end)
-        mov rdi, 0x1004ba0
-        mov rcx, 0x590
-        xor al, al
-        rep stosb
-
         ; Call kernel_main at 0x1004000
         mov rax, 0x1004000
         call rax

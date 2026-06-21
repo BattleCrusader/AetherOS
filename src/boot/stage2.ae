@@ -28,8 +28,8 @@ start:
         call print_string
 
         ; Set up DAP for INT 13h extended read
-        ; Read 38 sectors starting at LBA 34 to buffer 0x6000:0x0000
-        mov word [dap.sectors], 38
+        ; Read 40 sectors starting at LBA 34 to buffer 0x6000:0x0000
+        mov word [dap.sectors], 40
         mov word [dap.offset], 0x0000
         mov word [dap.segment], 0x6000
         mov dword [dap.lba], 34

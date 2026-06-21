@@ -42,6 +42,7 @@ cmd_count:    resq 1
 hook_count:   resq 1
 inode_table:  resq 96
 line_buf:     resb 256
+path_buf:     resb 128
         section .data
 root_name:    db "/", 0
 bin_name:     db "bin", 0
@@ -55,7 +56,8 @@ echo_str:     db "echo", 0
 reboot_str:   db "reboot", 0
 help_text:    db 0x0D, 0x0A, "Available commands: help, ls, echo <text>, reboot", 0x0D, 0x0A, 0
 ls_result:    db 0x0D, 0x0A, "bin  etc  lib  tmp  dev", 0x0D, 0x0A, 0
-unknown_str:  db 0x0D, 0x0A, "Unknown command", 0x0D, 0x0A, 0
+unknown_str:  db 0x0D, 0x0A, "Unknown command: ", 0
+cmd_not_found: db 0x0D, 0x0A, "Command not found: ", 0
 hex_chars:    db "0123456789ABCDEF", 0
         section .text
     }
@@ -250,9 +252,272 @@ func free_page(addr: u64) {
 }
 
 # ============================================================
-# String comparison helper
-# strcmp(s1: string, s2: string) — s1 in rdi, s2 in rsi
+# ELF64 Loader
 # ============================================================
+
+# elf_check_header(addr: u64): u64 — returns 1 if valid, 0 if not
+func elf_check_header(addr: u64): u64 {
+    asm {
+        mov rsi, rdi
+        cmp byte [rsi], 0x7F
+        jne .fail
+        cmp byte [rsi + 1], 'E'
+        jne .fail
+        cmp byte [rsi + 2], 'L'
+        jne .fail
+        cmp byte [rsi + 3], 'F'
+        jne .fail
+        cmp byte [rsi + 4], 2
+        jne .fail
+        cmp byte [rsi + 5], 1
+        jne .fail
+        mov ax, [rsi + 16]
+        cmp ax, 2
+        jne .fail
+        mov ax, [rsi + 18]
+        cmp ax, 62
+        jne .fail
+        mov rax, 1
+        ret
+    .fail:
+        xor rax, rax
+    }
+    return 0
+}
+
+# elf_get_entry(addr: u64): u64
+func elf_get_entry(addr: u64): u64 {
+    asm {
+        mov rax, [rdi + 24]
+    }
+    return 0
+}
+
+# elf_get_phoff(addr: u64): u64
+func elf_get_phoff(addr: u64): u64 {
+    asm {
+        mov rax, [rdi + 32]
+    }
+    return 0
+}
+
+# elf_get_phnum(addr: u64): u64
+func elf_get_phnum(addr: u64): u64 {
+    asm {
+        mov ax, [rdi + 56]
+    }
+    return 0
+}
+
+# elf_get_phentsize(addr: u64): u64
+func elf_get_phentsize(addr: u64): u64 {
+    asm {
+        mov ax, [rdi + 54]
+    }
+    return 0
+}
+
+# elf_load_segments(src: u64, dest: u64): u64
+# Loads all PT_LOAD segments from ELF at src into memory at dest
+# Returns entry point address, or 0 on error
+func elf_load_segments(src: u64, dest: u64): u64 {
+    asm {
+        push rbx
+        push r12
+        push r13
+        push r14
+        push r15
+
+        mov r12, rdi
+        mov r13, rsi
+
+        mov rdi, r12
+        call elf_check_header
+        test rax, rax
+        jz .error
+
+        mov rdi, r12
+        call elf_get_entry
+        mov r14, rax
+
+        mov rdi, r12
+        call elf_get_phoff
+        mov r15, rax
+
+        mov rdi, r12
+        call elf_get_phnum
+        mov rbx, rax
+
+        mov rdi, r12
+        call elf_get_phentsize
+        mov rcx, rax
+
+        xor r8, r8
+    .ph_loop:
+        cmp r8, rbx
+        jae .done
+        mov rax, r15
+        mov rdx, r8
+        mul rcx
+        add rax, r12
+        mov r9, rax
+        mov eax, [r9]
+        cmp eax, 1
+        jne .next_ph
+        mov rax, [r9 + 8]
+        mov r10, [r9 + 32]
+        mov r11, [r9 + 16]
+        lea rsi, [r12 + rax]
+        lea rdi, [r13 + r11]
+        mov rcx, r10
+        cld
+        rep movsb
+        mov rax, [r9 + 40]
+        mov rcx, [r9 + 32]
+        cmp rax, rcx
+        jbe .next_ph
+        sub rax, rcx
+        mov rcx, rax
+        lea rdi, [r13 + r11]
+        add rdi, [r9 + 32]
+        xor al, al
+        rep stosb
+    .next_ph:
+        inc r8
+        jmp .ph_loop
+    .done:
+        mov rax, r14
+        jmp .out
+    .error:
+        xor rax, rax
+    .out:
+        pop r15
+        pop r14
+        pop r13
+        pop r12
+        pop rbx
+    }
+    return 0
+}
+
+# exec_binary(path: string): u64
+# Loads an ELF binary from the boot FS and executes it at BIN_BASE
+# Returns 0 on success, 1 on error
+func exec_binary(path: string): u64 {
+    asm {
+        push rbx
+        push r12
+
+        mov r12, rdi        ; r12 = path
+
+        ; Open the file
+        call fs_open
+        test rax, rax
+        jz .error
+
+        mov rbx, rax        ; rbx = inode
+
+        ; Read the file into a scratch buffer at BIN_BASE
+        ; First, read the header to check it
+        mov rdi, rbx
+        mov rsi, BIN_BASE
+        mov rdx, 64
+        call fs_read
+        test rax, rax
+        jz .error
+
+        ; Check ELF header
+        mov rdi, BIN_BASE
+        call elf_check_header
+        test rax, rax
+        jz .error
+
+        ; Read the full file into BIN_BASE + 0x10000 (scratch area)
+        ; We need to know the file size. For now, read up to 64KB.
+        mov rdi, rbx
+        mov rsi, BIN_BASE
+        mov rdx, 0x10000     ; 64KB max
+        call fs_read
+        test rax, rax
+        jz .error
+
+        ; Load segments from scratch to BIN_BASE
+        mov rdi, BIN_BASE
+        mov rsi, BIN_BASE
+        call elf_load_segments
+        test rax, rax
+        jz .error
+
+        ; Call the entry point
+        ; For now, just call it with no arguments
+        call rax
+
+        xor rax, rax
+        jmp .out
+
+    .error:
+        mov rax, 1
+    .out:
+        pop r12
+        pop rbx
+    }
+    return 1
+}
+
+# path_resolve(name: string): string
+# Searches /bin/ for name.elf, returns full path or empty string
+func path_resolve(name: string): string {
+    asm {
+        push rbx
+        push r12
+
+        mov r12, rdi        ; r12 = name
+
+        ; Build path: "/bin/" + name + ".elf"
+        ; We'll use a small buffer in BSS for this
+        lea rbx, [rel path_buf]
+        mov byte [rbx], '/'
+        mov byte [rbx + 1], 'b'
+        mov byte [rbx + 2], 'i'
+        mov byte [rbx + 3], 'n'
+        mov byte [rbx + 4], '/'
+
+        ; Copy name
+        mov rsi, r12
+        lea rdi, [rbx + 5]
+    .copy_name:
+        mov al, [rsi]
+        test al, al
+        jz .add_ext
+        mov [rdi], al
+        inc rsi
+        inc rdi
+        jmp .copy_name
+
+    .add_ext:
+        mov byte [rdi], '.'
+        mov byte [rdi + 1], 'e'
+        mov byte [rdi + 2], 'l'
+        mov byte [rdi + 3], 'f'
+        mov byte [rdi + 4], 0
+
+        ; Try to open it
+        lea rdi, [rbx]
+        call fs_open
+        test rax, rax
+        jz .not_found
+
+        lea rax, [rbx]
+        jmp .out
+
+    .not_found:
+        xor rax, rax
+    .out:
+        pop r12
+        pop rbx
+    }
+    return 0
+}
 
 func strcmp(s1: string, s2: string): u64 {
     asm {
@@ -317,47 +582,55 @@ func read_line(): string {
 }
 
 # exec_cmd(cmd: string) — cmd in rdi
+# First checks module registry, then tries PATH resolution
 func exec_cmd(cmd: string) {
     asm {
-        mov rsi, rdi
-        lea rdi, [rel help_str]
-        call strcmp
+        push rbx
+        push r12
+
+        mov r12, rdi        ; r12 = cmd string
+
+        ; First, check module registry for a registered command
+        mov rdi, r12
+        call find_cmd_impl
         test rax, rax
-        jnz .check_ls
-        lea rdi, [rel help_text]
-        call serial_puts
-        ret
-    .check_ls:
-        lea rdi, [rel ls_str]
-        call strcmp
+        jz .try_path
+        ; Found a registered command handler — call it
+        call rax
+        jmp .done
+
+    .try_path:
+        ; Try to resolve as a binary in /bin/
+        mov rdi, r12
+        call path_resolve
         test rax, rax
-        jnz .check_echo
-        lea rdi, [rel ls_result]
+        jz .not_found
+
+        ; Found a binary — execute it
+        mov rdi, rax
+        call exec_binary
+        jmp .done
+
+    .not_found:
+        ; Build "Unknown command: <name>\r\n" in path_buf
+        lea rdi, [rel unknown_str]
         call serial_puts
-        ret
-    .check_echo:
-        lea rdi, [rel echo_str]
-        call strcmp
-        test rax, rax
-        jnz .check_reboot
-        add rsi, 5
-        mov rdi, rsi
+        mov rdi, r12
         call serial_puts
+        call serial_newline
+
+    .done:
+        pop r12
+        pop rbx
+    }
+}
+
+func serial_newline() {
+    asm {
         mov al, 0x0D
         call serial_putc
         mov al, 0x0A
         call serial_putc
-        ret
-    .check_reboot:
-        lea rdi, [rel reboot_str]
-        call strcmp
-        test rax, rax
-        jnz .unknown
-        mov al, 0xFE
-        out 0x64, al
-    .unknown:
-        lea rdi, [rel unknown_str]
-        call serial_puts
     }
 }
 
@@ -693,6 +966,17 @@ func fs_chdir(ino: u64) {
 # ============================================================
 
 func main(): u64 {
+    asm {
+        extern __bss_start
+        extern __bss_end
+    }
+    asm {
+        mov rdi, __bss_start
+        mov rcx, __bss_end
+        sub rcx, rdi
+        xor al, al
+        rep stosb
+    }
     data_init()
     serial_init()
     serial_puts("\r\n\r\n")
