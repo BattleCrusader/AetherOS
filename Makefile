@@ -1,8 +1,7 @@
 # Aether OS — Makefile
-# Uses the Aether compiler for kernel, NASM for boot chain
+# Everything is compiled from Aether source. No raw NASM files.
 
 AETHER    = aether
-ASM       = nasm
 OBJCOPY   = x86_64-elf-objcopy
 QEMU      = qemu-system-x86_64
 
@@ -39,9 +38,9 @@ $(STAGE1_BIN): $(SRC_BOOT)/stage1.ae
 $(STAGE2_BIN): $(SRC_BOOT)/stage2.ae
 	$(AETHER) --target boot -O0 $< -o $@
 
-# Boot entry (flat binary)
-$(BOOT_BIN): $(SRC_BOOT)/boot.S
-	$(ASM) -f bin -o $@ $<
+# Boot entry (flat binary) — compiled from Aether
+$(BOOT_BIN): $(SRC_BOOT)/boot.ae
+	$(AETHER) --target boot -O0 $< -o $@
 
 # Kernel — compiled from Aether source
 $(KERNEL_ELF): $(KERNEL_AE)
