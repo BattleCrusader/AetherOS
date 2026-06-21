@@ -37,6 +37,22 @@ const MAX_CMDS = 16
 const MAX_HOOKS = 8
 const MAX_INODES = 32
 
+# ATA PIO primary bus I/O ports
+const ATA_DATA = 0x1F0
+const ATA_FEATURES = 0x1F1
+const ATA_SECTOR_COUNT = 0x1F2
+const ATA_LBA_LO = 0x1F3
+const ATA_LBA_MID = 0x1F4
+const ATA_LBA_HI = 0x1F5
+const ATA_DRIVE = 0x1F6
+const ATA_CMD = 0x1F7
+const ATA_ALT_STATUS = 0x3F6
+
+# Kernel boot info
+const KERNEL_LOAD_ADDR = 0x1000000
+const KERNEL_LINK_ADDR = 0x1004000
+const KERNEL_START_SECTOR = 34
+
 # ============================================================
 # Data section — top-level BSS and data declarations
 # ============================================================
@@ -53,6 +69,10 @@ inode_table:  resq 96
 line_buf:     resb 256
 cmd_buf:      resb 64
 path_buf:     resb 128
+kernel_end_sector: resq 1
+bin_index_count:   resq 1
+bin_index_entries: resq 64
+bin_index_names:   resb 1024
     section .data
 root_name:    db "/", 0
 bin_name:     db "bin", 0
@@ -1043,6 +1063,217 @@ func unreg_cmd_impl(name: string) {
 }
 
 # ============================================================
+# ATA PIO Disk Read
+# ============================================================
+
+# ata_read_sectors(lba: u64, count: u64, buf: string): u64
+# Reads 'count' sectors starting at LBA 'lba' into 'buf' using ATA PIO mode.
+# Returns number of sectors read, or 0 on error.
+func ata_read_sectors(lba: u64, count: u64, buf: string): u64 {
+    asm {
+        push rbx
+        push r12
+        push r13
+
+        mov r12, rdi        ; r12 = lba
+        mov r13, rsi        ; r13 = count
+        mov rbx, rdx        ; rbx = buf
+
+        ; Wait for BSY=0
+        mov dx, ATA_CMD
+    .wait_not_bsy:
+        in al, dx
+        test al, 0x80
+        jnz .wait_not_bsy
+
+        ; Select drive: 0xE0 | ((lba >> 24) & 0x0F)
+        mov rax, r12
+        shr rax, 24
+        and al, 0x0F
+        or al, 0xE0
+        mov dx, ATA_DRIVE
+        out dx, al
+
+        ; Features = 0
+        mov dx, ATA_FEATURES
+        xor al, al
+        out dx, al
+
+        ; Sector count
+        mov dx, ATA_SECTOR_COUNT
+        mov al, r13b
+        out dx, al
+
+        ; LBA low (bits 7:0)
+        mov dx, ATA_LBA_LO
+        mov al, r12b
+        out dx, al
+
+        ; LBA mid (bits 15:8)
+        mov dx, ATA_LBA_MID
+        mov rax, r12
+        shr rax, 8
+        out dx, al
+
+        ; LBA high (bits 23:16)
+        mov dx, ATA_LBA_HI
+        mov rax, r12
+        shr rax, 16
+        out dx, al
+
+        ; Send READ SECTORS command (0x20)
+        mov dx, ATA_CMD
+        mov al, 0x20
+        out dx, al
+
+        xor rcx, rcx        ; rcx = sectors read so far
+
+    .sector_loop:
+        cmp rcx, r13
+        jae .done
+
+        ; Wait for BSY=0 and DRQ=1
+        mov dx, ATA_CMD
+    .wait_drq:
+        in al, dx
+        test al, 0x80       ; BSY
+        jnz .wait_drq
+        test al, 0x08       ; DRQ
+        jz .wait_drq
+
+        ; Read 256 words (512 bytes) from data port
+        mov dx, ATA_DATA
+        mov rdi, rbx
+        mov cx, 256
+        rep insw
+
+        ; Advance buffer
+        add rbx, 512
+        inc rcx
+        jmp .sector_loop
+
+    .done:
+        mov rax, rcx
+        pop r13
+        pop r12
+        pop rbx
+    }
+    return 0
+}
+
+# ============================================================
+# Kernel End Sector Computation
+# ============================================================
+
+# compute_kernel_end_sector(): u64
+# Computes the end sector of the kernel on disk using __bss_end.
+# kernel_end_sector = KERNEL_START_SECTOR + (kernel_size + 511) / 512
+func compute_kernel_end_sector(): u64 {
+    let result: u64 = 0
+    asm {
+        extern __bss_end
+    }
+    asm {
+        ; kernel_size = __bss_end - KERNEL_LINK_ADDR
+        mov rax, __bss_end
+        sub rax, KERNEL_LINK_ADDR
+
+        ; Add boot preamble size (16KB = 0x4000)
+        add rax, 0x4000
+
+        ; kernel_end_sector = KERNEL_START_SECTOR + (kernel_size + 511) / 512
+        add rax, 511
+        xor rdx, rdx
+        mov rcx, 512
+        div rcx
+        add rax, KERNEL_START_SECTOR
+
+        ; Store to result variable's stack slot
+        mov [rbp-8], rax
+    }
+    return result
+}
+
+# ============================================================
+# Binary Index Loader
+# ============================================================
+
+# load_binary_index()
+# Reads the binary index sector (at kernel_end_sector) and parses
+# entries into bin_index_count, bin_index_entries, and bin_index_names.
+func load_binary_index() {
+    asm {
+        push rbx
+        push r12
+        push r13
+        push r14
+        push r15
+
+        ; Allocate a temporary buffer on the stack for one sector
+        sub rsp, 512
+
+        ; Read the index sector
+        mov rdi, [rel kernel_end_sector]
+        mov rsi, 1
+        mov rdx, rsp
+        call ata_read_sectors
+        test rax, rax
+        jz .done
+
+        ; Parse count (first u32)
+        mov eax, [rsp]
+        mov [rel bin_index_count], rax
+        test rax, rax
+        jz .done
+
+        ; r12 = entry pointer (start of entries = rsp + 4)
+        lea r12, [rsp + 4]
+        xor r13, r13                ; r13 = entry index
+        lea r14, [rel bin_index_entries]  ; r14 = entries table
+        lea r15, [rel bin_index_names]    ; r15 = names buffer
+
+    .entry_loop:
+        cmp r13, [rel bin_index_count]
+        jae .done
+
+        ; Parse start_sector (u32 at offset 0)
+        mov eax, [r12]
+        mov [r14 + r13*8], rax
+
+        ; Parse size (u32 at offset 4)
+        mov eax, [r12 + 4]
+        ; Compute address: r14 + r13*8 + 4 using temp register
+        mov rdx, r13
+        shl rdx, 3
+        add rdx, r14
+        add rdx, 4
+        mov [rdx], rax
+
+        ; Copy name (32 bytes at offset 8)
+        lea rsi, [r12 + 8]
+        mov rdi, r15
+        mov rax, r13
+        shl rax, 5          ; multiply by 32
+        add rdi, rax
+        mov cx, 32
+        rep movsb
+
+        ; Advance to next entry (4 + 4 + 32 = 40 bytes)
+        add r12, 40
+        inc r13
+        jmp .entry_loop
+
+    .done:
+        add rsp, 512
+        pop r15
+        pop r14
+        pop r13
+        pop r12
+        pop rbx
+    }
+}
+
+# ============================================================
 # Boot Filesystem
 # ============================================================
 
@@ -1098,6 +1329,67 @@ func fs_open(path: string): u64 {
     .check_root:
         cmp rsi, rdi
         je .found_root
+
+        ; Check if path starts with "bin/"
+        push rsi
+        push rdi
+        mov al, [rsi]
+        cmp al, 'b'
+        jne .not_bin
+        mov al, [rsi + 1]
+        cmp al, 'i'
+        jne .not_bin
+        mov al, [rsi + 2]
+        cmp al, 'n'
+        jne .not_bin
+        mov al, [rsi + 3]
+        cmp al, '/'
+        jne .not_bin
+
+        ; It's a /bin/ path — look up in binary index
+        add rsi, 4          ; skip "bin/"
+        ; rsi now points to filename, rdi points to end
+        ; Compare against each binary index name
+        xor rcx, rcx        ; rcx = entry index
+        lea rbx, [rel bin_index_names]
+    .bin_loop:
+        cmp rcx, [rel bin_index_count]
+        jae .not_found_bin
+        mov r8, rsi         ; r8 = path name
+        ; Compute index name address: rbx + rcx * 32
+        mov r9, rcx
+        shl r9, 5
+        add r9, rbx
+    .bin_cmp:
+        mov al, [r8]
+        mov dl, [r9]
+        cmp al, dl
+        jne .bin_next
+        test al, al
+        jz .bin_found
+        inc r8
+        inc r9
+        jmp .bin_cmp
+    .bin_next:
+        inc rcx
+        jmp .bin_loop
+    .bin_found:
+        ; Return ino = 3 + index
+        mov rax, rcx
+        add rax, 3
+        pop rdi
+        pop rsi
+        jmp .done_ret
+    .not_found_bin:
+        pop rdi
+        pop rsi
+        jmp .not_found
+
+    .not_bin:
+        pop rdi
+        pop rsi
+
+        ; Walk inode table for other paths
         lea rbx, [rel inode_table]
         xor rcx, rcx
     .loop:
@@ -1135,10 +1427,129 @@ func fs_open(path: string): u64 {
 }
 
 func fs_read(ino: u64, buf: string, len: u64): u64 {
+    asm {
+        push rbx
+        push r12
+        push r13
+
+        mov r12, rdi        ; r12 = ino
+        mov r13, rsi        ; r13 = buf
+        mov rbx, rdx        ; rbx = len
+
+        ; Check if ino is a binary (ino > 0 and ino <= bin_index_count)
+        ; ino 1 = root, ino 2 = /bin dir, ino 3+ = binaries
+        ; Binary index is 0-based, so binary ino = index + 3
+        ; Check: ino >= 3 and (ino - 3) < bin_index_count
+        cmp r12, 3
+        jb .not_found
+
+        mov rax, r12
+        sub rax, 3          ; rax = index into binary index
+        mov rcx, [rel bin_index_count]
+        cmp rax, rcx
+        jae .not_found
+
+        ; Get start_sector from bin_index_entries[index * 8]
+        lea rcx, [rel bin_index_entries]
+        mov edx, [rcx + rax*8]      ; start_sector (u32)
+        mov r8d, [rcx + rax*8 + 4]  ; size (u32)
+
+        ; Calculate sectors to read: (min(len, size) + 511) / 512
+        cmp rbx, r8
+        jbe .use_len
+        mov rbx, r8
+    .use_len:
+        add rbx, 511
+        shr rbx, 9          ; rbx = sector count
+
+        ; Read sectors
+        mov rdi, rdx        ; rdi = start_sector (already in edx)
+        mov rsi, rbx        ; rsi = sector count
+        mov rdx, r13        ; rdx = buf
+        call ata_read_sectors
+
+        ; Return bytes read = sectors * 512
+        shl rax, 9
+        jmp .out
+
+    .not_found:
+        xor rax, rax
+    .out:
+        pop r13
+        pop r12
+        pop rbx
+    }
     return 0
 }
 
 func fs_readdir(ino: u64, buf: string): u64 {
+    asm {
+        push rbx
+        push r12
+        push r13
+        push r14
+        push r15
+
+        mov r12, rdi        ; r12 = ino
+        mov r15, rsi        ; r15 = original buf (save for length calc)
+
+        ; Check if ino == 2 (/bin directory)
+        cmp r12, 2
+        jne .not_found
+
+        ; Iterate through binary index entries
+        xor r14, r14        ; r14 = entry index
+        lea rbx, [rel bin_index_names]  ; rbx = names buffer
+        mov r13, r15        ; r13 = current buf pointer
+
+    .entry_loop:
+        cmp r14, [rel bin_index_count]
+        jae .done
+
+        ; Copy name from bin_index_names[index * 32] to buf
+        mov rsi, r14
+        shl rsi, 5          ; multiply by 32
+        add rsi, rbx
+        mov rdi, r13
+    .copy_name:
+        mov al, [rsi]
+        test al, al
+        jz .pad_name
+        mov [rdi], al
+        inc rsi
+        inc rdi
+        jmp .copy_name
+
+    .pad_name:
+        ; Null-terminate
+        mov byte [rdi], 0
+        inc rdi
+
+        ; Add newline
+        mov byte [rdi], 0x0A
+        inc rdi
+
+        ; Update buf pointer for next entry
+        mov r13, rdi
+
+        inc r14
+        jmp .entry_loop
+
+    .done:
+        ; Return total bytes written = current - original
+        mov rax, r13
+        sub rax, r15
+        jmp .out
+
+    .not_found:
+        xor rax, rax
+    .out:
+        pop r15
+        pop r14
+        pop r13
+        pop r12
+        pop rbx
+    }
     return 0
 }
 
@@ -1187,11 +1598,19 @@ func main(): u64 {
     fs_init()
     serial_puts("OK\n")
 
-    serial_puts("[5/5] Registering built-in commands... ")
+    serial_puts("[5/6] Loading binary index... ")
+    let end_sector = compute_kernel_end_sector()
+    asm {
+        mov [rel kernel_end_sector], rax
+    }
+    load_binary_index()
+    serial_puts("OK\n")
+
+    serial_puts("[6/6] Registering built-in commands... ")
     register_commands()
     serial_puts("OK\n")
 
-    serial_puts("[6/6] Starting shell...\n\n")
+    serial_puts("[7/7] Starting shell...\n\n")
     shell_main()
 
     while true {

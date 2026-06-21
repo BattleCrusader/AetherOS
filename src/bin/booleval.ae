@@ -1,0 +1,54 @@
+# Aether OS — booleval command
+# Standalone binary: evaluates a boolean value (non-zero = true)
+
+func puts(s: string) {
+    asm {
+        mov rax, 0x5008
+        call rax
+    }
+}
+
+func exit_bin() {
+    asm {
+        mov rax, 0x5038
+        call rax
+    }
+}
+
+func newline() {
+    asm {
+        mov al, 0x0D
+        mov dx, 0x3F8
+        out dx, al
+        mov al, 0x0A
+        mov dx, 0x3F8
+        out dx, al
+    }
+}
+
+func main(): u64 {
+    # Check if argument (passed in rdi) is non-zero
+    asm {
+        mov rax, rdi
+        test rax, rax
+        jnz .true
+        mov rdi, .false_str
+        mov rax, 0x5008
+        call rax
+        jmp .done
+    .true:
+        mov rdi, .true_str
+        mov rax, 0x5008
+        call rax
+    .done:
+        jmp .end
+    .true_str:
+        db "true", 0
+    .false_str:
+        db "false", 0
+    .end:
+    }
+    newline()
+    exit_bin()
+    return 0
+}
