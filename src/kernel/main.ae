@@ -28,12 +28,11 @@ const MAX_HOOKS = 8
 const MAX_INODES = 32
 
 # ============================================================
-# Data section setup — called once at boot
+# Data section setup — top-level declarations
 # ============================================================
 
-func data_init() {
-    asm {
-        section .bss
+asm {
+    section .bss
 cmd_names:    resq 16
 cmd_handlers: resq 16
 hook_ids:     resq 8
@@ -43,7 +42,7 @@ hook_count:   resq 1
 inode_table:  resq 96
 line_buf:     resb 256
 path_buf:     resb 128
-        section .data
+    section .data
 root_name:    db "/", 0
 bin_name:     db "bin", 0
 etc_name:     db "etc", 0
@@ -59,8 +58,9 @@ ls_result:    db 0x0D, 0x0A, "bin  etc  lib  tmp  dev", 0x0D, 0x0A, 0
 unknown_str:  db 0x0D, 0x0A, "Unknown command: ", 0
 cmd_not_found: db 0x0D, 0x0A, "Command not found: ", 0
 hex_chars:    db "0123456789ABCDEF", 0
-        section .text
-    }
+}
+
+func data_init() {
 }
 
 # ============================================================

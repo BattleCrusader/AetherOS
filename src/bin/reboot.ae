@@ -1,0 +1,44 @@
+# Aether OS — reboot command
+# Standalone binary: reboots the system via keyboard controller
+
+func puts(s: string) {
+    asm {
+        mov rax, 0x5008
+        call rax
+    }
+}
+
+func exit_bin() {
+    asm {
+        mov rax, 0x5038
+        call rax
+    }
+}
+
+func newline() {
+    asm {
+        mov al, 0x0D
+        mov dx, 0x3F8
+        out dx, al
+        mov al, 0x0A
+        mov dx, 0x3F8
+        out dx, al
+    }
+}
+
+func main(): u64 {
+    puts("Rebooting...")
+    newline()
+    asm {
+        mov al, 0xFE
+        out 0x64, al
+    }
+    asm {
+        cli
+    .loop:
+        hlt
+        jmp .loop
+    }
+    exit_bin()
+    return 0
+}

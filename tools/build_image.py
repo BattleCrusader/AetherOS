@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
-"""Aether OS — Disk Image Builder
-Assembles stage1, stage2, and kernel into a raw disk image.
-Stage1 at sector 0 (MBR), stage2 at sectors 1-32, kernel at sectors 34+.
+"""Aether OS — Disk Image Builder with Binary Embedding
+Assembles stage1, stage2, kernel, and standalone binaries into a raw disk image.
+Binaries are placed after the kernel at known sector offsets.
+A binary index is written at a fixed sector after the kernel.
 """
 
 import sys
 import os
 import argparse
+import struct
 
 def main():
-    parser = argparse.ArgumentParser(description='Build Aether OS disk image')
+    parser = argparse.ArgumentParser(description='Build Aether OS disk image with binaries')
     parser.add_argument('--stage1', required=True, help='Stage1 MBR binary (512 bytes)')
     parser.add_argument('--stage2', required=True, help='Stage2 loader binary (16KB)')
-    parser.add_argument('--kernel', required=True, help='Kernel ELF binary')
+    parser.add_argument('--kernel', required=True, help='Kernel combined binary')
+    parser.add_argument('--bin-dir', required=True, help='Directory containing .elf binaries')
     parser.add_argument('--output', required=True, help='Output disk image path')
     args = parser.parse_args()
 
@@ -39,24 +42,79 @@ def main():
     kernel_size = len(kernel)
     kernel_padded = kernel.ljust(((kernel_size + 511) // 512) * 512, b'\x00')
 
-    # Build disk image
+    # Read binaries
+    binaries = []
+    bin_dir = args.bin_dir
+    if os.path.isdir(bin_dir):
+        for fname in sorted(os.listdir(bin_dir)):
+            if fname.endswith('.elf'):
+                fpath = os.path.join(bin_dir, fname)
+                with open(fpath, 'rb') as f:
+                    data = f.read()
+                name = fname[:-4]  # strip .elf
+                binaries.append((name, data))
+
+    # Calculate sector layout
     # Sector 0: stage1 (MBR)
     # Sectors 1-32: stage2 (16KB)
+    # Sector 33: unused (padding)
     # Sectors 34+: kernel
+    kernel_start_sector = 34
+    kernel_sectors = len(kernel_padded) // 512
+    binary_start_sector = kernel_start_sector + kernel_sectors
+
+    # Build binary index
+    # Format: [count:u32] [start_sector:u32, size:u32, name:32bytes] x count
+    index_data = struct.pack('<I', len(binaries))
+    current_sector = binary_start_sector
+    for name, data in binaries:
+        data_sectors = ((len(data) + 511) // 512)
+        index_data += struct.pack('<II', current_sector, len(data))
+        name_bytes = name.encode('ascii').ljust(32, b'\x00')[:32]
+        index_data += name_bytes
+        current_sector += data_sectors
+
+    # Pad index to sector boundary
+    index_padded = index_data.ljust(((len(index_data) + 511) // 512) * 512, b'\x00')
+    index_start_sector = current_sector
+    current_sector += len(index_padded) // 512
+
+    # Build disk image
     with open(args.output, 'wb') as f:
         f.write(stage1)           # sector 0
         f.write(stage2)           # sectors 1-32
-        # Pad sectors 33 (unused)
-        f.write(b'\x00' * 512)
+        f.write(b'\x00' * 512)    # sector 33 (unused)
         f.write(kernel_padded)    # sectors 34+
+        # Write binaries
+        for name, data in binaries:
+            data_padded = data.ljust(((len(data) + 511) // 512) * 512, b'\x00')
+            f.write(data_padded)
+        # Write binary index
+        f.write(index_padded)
 
     # Print summary
-    total_sectors = (len(stage1) + len(stage2) + 512 + len(kernel_padded)) // 512
+    total_sectors = current_sector + len(index_padded) // 512
     print(f"Disk image created: {args.output}")
     print(f"  Stage1: {len(stage1)} bytes (1 sector)")
     print(f"  Stage2: {len(stage2)} bytes (32 sectors)")
-    print(f"  Kernel: {kernel_size} bytes ({kernel_size // 512 + 1} sectors)")
+    print(f"  Kernel: {kernel_size} bytes ({kernel_sectors} sectors, starting at sector {kernel_start_sector})")
+    print(f"  Binary index at sector: {index_start_sector}")
+    print(f"  Binaries:")
+    for name, data in binaries:
+        data_sectors = ((len(data) + 511) // 512)
+        print(f"    {name}.elf: {len(data)} bytes ({data_sectors} sectors)")
     print(f"  Total:  {total_sectors} sectors ({total_sectors * 512} bytes)")
+
+    # Write binary layout info for kernel
+    info_path = os.path.join(os.path.dirname(args.output), 'binary_layout.txt')
+    with open(info_path, 'w') as f:
+        f.write(f"BINARY_START_SECTOR={binary_start_sector}\n")
+        f.write(f"INDEX_SECTOR={index_start_sector}\n")
+        f.write(f"BINARY_COUNT={len(binaries)}\n")
+        for name, data in binaries:
+            data_sectors = ((len(data) + 511) // 512)
+            f.write(f"BIN:{name}:{binary_start_sector}:{len(data)}\n")
+            binary_start_sector += data_sectors
 
 if __name__ == '__main__':
     main()

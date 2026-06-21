@@ -1,0 +1,161 @@
+# Aether OS — LibAether (Userspace Runtime)
+# Thin wrappers around the syscall page at 0x5000
+# Included by all /bin/ binaries
+
+# Syscall wrappers — direct calls through fixed address table
+func putc(c: u8) {
+    asm {
+        mov rax, 0x5000
+        call rax
+    }
+}
+
+func puts(s: string) {
+    asm {
+        mov rax, 0x5008
+        call rax
+    }
+}
+
+func open(path: string): u32 {
+    asm {
+        mov rax, 0x5010
+        call rax
+    }
+    return 0
+}
+
+func read(ino: u32, buf: string, len: u32): u32 {
+    asm {
+        mov rax, 0x5018
+        call rax
+    }
+    return 0
+}
+
+func readdir(ino: u32, buf: string): u32 {
+    asm {
+        mov rax, 0x5020
+        call rax
+    }
+    return 0
+}
+
+func getcwd(): u32 {
+    asm {
+        mov rax, 0x5028
+        call rax
+    }
+    return 0
+}
+
+func chdir(ino: u32) {
+    asm {
+        mov rax, 0x5030
+        call rax
+    }
+}
+
+func exit_bin() {
+    asm {
+        mov rax, 0x5038
+        call rax
+    }
+}
+
+func booleval(v: u64): u64 {
+    asm {
+        mov rax, 0x5040
+        call rax
+    }
+    return 0
+}
+
+# Utility functions
+func print(s: string) {
+    puts(s)
+}
+
+func println(s: string) {
+    puts(s)
+    asm {
+        mov al, 0x0D
+        mov dx, 0x3F8
+        out dx, al
+        mov al, 0x0A
+        out dx, al
+    }
+}
+
+func print_hex(val: u64) {
+    asm {
+        push rbx
+        push r12
+        mov r12, rdi
+        mov rbx, 16
+    .loop:
+        sub rbx, 2
+        js .done
+        mov rax, r12
+        mov rcx, rbx
+        shr rax, cl
+        and al, 0x0F
+        cmp al, 10
+        jb .digit
+        add al, 'A' - 10
+        jmp .emit
+    .digit:
+        add al, '0'
+    .emit:
+        mov dx, 0x3F8
+        out dx, al
+        jmp .loop
+    .done:
+        pop r12
+        pop rbx
+    }
+}
+
+func print_dec(val: u64) {
+    asm {
+        push rbx
+        push r12
+        mov r12, rdi
+        mov rbx, 10
+        xor rcx, rcx
+        mov rdi, rsp
+        sub rsp, 24
+    .loop:
+        xor rdx, rdx
+        mov rax, r12
+        div rbx
+        mov r12, rax
+        add dl, '0'
+        dec rdi
+        mov [rdi], dl
+        inc rcx
+        test rax, rax
+        jnz .loop
+        mov rdx, rcx
+    .write:
+        mov al, [rdi]
+        mov dx, 0x3F8
+        out dx, al
+        inc rdi
+        dec rcx
+        jnz .write
+        add rsp, 24
+        pop r12
+        pop rbx
+    }
+}
+
+func newline() {
+    asm {
+        mov al, 0x0D
+        mov dx, 0x3F8
+        out dx, al
+        mov al, 0x0A
+        out dx, al
+    }
+}
