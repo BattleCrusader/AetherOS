@@ -83,10 +83,10 @@ pmode_entry:
         out dx, al
 
         ; Copy kernel from 0x60000 to 0x1000000
-        ; Source: 0x60000, Dest: 0x1000000, Size: 38 sectors = 19456 bytes
+        ; Source: 0x60000, Dest: 0x1000000, Size: 40 sectors = 20480 bytes
         mov esi, 0x60000
         mov edi, 0x1000000
-        mov ecx, 4864       ; 19456 bytes / 4 = 4864 dwords
+        mov ecx, 5120       ; 20480 bytes / 4 = 5120 dwords
         cld
         rep movsd
 
