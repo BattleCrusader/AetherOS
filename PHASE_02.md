@@ -6,10 +6,15 @@ Phase 2 enables standalone ELF binaries in `/bin/`, module loading from `/lib/en
 ## Tasks
 
 ### P02.01 — Standalone Commands (--target binary)
-- [ ] Create `/bin/help.ae` — standalone help command
-- [ ] Create `/bin/ls.ae` — standalone ls command
-- [ ] Create `/bin/echo.ae` — standalone echo command
-- [ ] Create `/bin/reboot.ae` — standalone reboot command
+- [x] Create `/bin/help.ae` — standalone help command
+- [x] Create `/bin/ls.ae` — standalone ls command
+- [x] Create `/bin/echo.ae` — standalone echo command
+- [x] Create `/bin/reboot.ae` — standalone reboot command
+- [x] Build system: compile all /bin/ commands and embed in disk image
+- [x] Boot FS: populate /bin/ directory with compiled ELF binaries
+- [x] **Shell prompt fix**: removed redundant `return 0` from asm-block functions
+- [x] **Compiler fix**: suppress default return when asm block contains `ret`
+- [x] **Shell now boots, shows prompt, and waits for input** 🟢
 - [ ] Create `/bin/shutdown.ae` — standalone shutdown command
 - [ ] Create `/bin/cat.ae` — standalone cat command
 - [ ] Create `/bin/clear.ae` — standalone clear command
@@ -21,9 +26,6 @@ Phase 2 enables standalone ELF binaries in `/bin/`, module loading from `/lib/en
 - [ ] Create `/bin/date.ae` — standalone date/time command
 - [ ] Create `/bin/booleval.ae` — standalone boolean evaluation command
 - [ ] Create `/bin/qubit.ae` — standalone qubit command
-- [ ] Create `/bin/help.ae` — standalone help command
-- [ ] Build system: compile all /bin/ commands and embed in disk image
-- [ ] Boot FS: populate /bin/ directory with compiled ELF binaries
 - [ ] Test: each command runs correctly in QEMU
 
 ### P02.02 — Module Loading

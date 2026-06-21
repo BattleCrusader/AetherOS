@@ -11,6 +11,7 @@ const COM1_LCR = 0x3FB
 const COM1_MCR = 0x3FC
 const COM1_LSR = 0x3FD
 const LSR_THR_EMPTY = 0x20
+const LSR_DATA_READY = 0x01
 
 const BITMAP_ADDR = 0xD000
 const MEM_START = 0x11E6000
@@ -30,7 +31,7 @@ const MAX_HOOKS = 8
 const MAX_INODES = 32
 
 # ============================================================
-# Data section setup — top-level declarations
+# Data section — top-level BSS and data declarations
 # ============================================================
 
 asm {
@@ -62,12 +63,8 @@ cmd_not_found: db 0x0D, 0x0A, "Command not found: ", 0
 hex_chars:    db "0123456789ABCDEF", 0
 }
 
-func data_init() {
-}
-
 # ============================================================
-# Serial I/O — asm blocks do NOT contain leave/ret
-# The compiler's function epilogue handles returns
+# Serial I/O — asm blocks for port I/O
 # ============================================================
 
 func serial_init() {
@@ -88,11 +85,10 @@ func serial_init() {
         mov al, 0x03
         out dx, al
         mov dx, COM1_MCR
-        mov al, 0x03        ; DTR + RTS, NO loopback
+        mov al, 0x03
         out dx, al
-        ; Reset FIFOs and drain stale data
-        mov dx, 0x3FA        ; FCR (COM1 + 2)
-        mov al, 0x07         ; enable + clear both FIFOs
+        mov dx, 0x3FA
+        mov al, 0x07
         out dx, al
         mov dx, COM1_LSR
     .drain:
@@ -107,7 +103,6 @@ func serial_init() {
     }
 }
 
-# serial_putc(c: byte) — c in rdi
 func serial_putc(c: byte) {
     asm {
         mov dx, COM1_LSR
@@ -121,7 +116,6 @@ func serial_putc(c: byte) {
     }
 }
 
-# serial_puts(s: string) — s pointer in rdi
 func serial_puts(s: string) {
     asm {
         mov rsi, rdi
@@ -129,13 +123,13 @@ func serial_puts(s: string) {
         lodsb
         test al, al
         jz .done
-        mov ah, al          ; save char in ah
+        mov ah, al
         mov dx, COM1_LSR
     .wait:
         in al, dx
         test al, LSR_THR_EMPTY
         jz .wait
-        mov al, ah          ; restore char
+        mov al, ah
         mov dx, COM1_DATA
         out dx, al
         jmp .loop
@@ -143,7 +137,15 @@ func serial_puts(s: string) {
     }
 }
 
-# serial_puthex(val: u64) — val in rdi
+func serial_newline() {
+    asm {
+        mov al, 0x0D
+        call serial_putc
+        mov al, 0x0A
+        call serial_putc
+    }
+}
+
 func serial_puthex(val: u64) {
     asm {
         mov rsi, hex_chars
@@ -171,7 +173,6 @@ func serial_puthex(val: u64) {
     }
 }
 
-# serial_putdec(val: u64) — val in rdi
 func serial_putdec(val: u64) {
     asm {
         mov rax, rdi
@@ -253,7 +254,6 @@ func alloc_page(): u64 {
     }
 }
 
-# free_page(addr: u64) — addr in rdi
 func free_page(addr: u64) {
     asm {
         mov rax, rdi
@@ -272,7 +272,6 @@ func free_page(addr: u64) {
 # ELF64 Loader
 # ============================================================
 
-# elf_check_header(addr: u64): u64 — returns 1 if valid, 0 if not
 func elf_check_header(addr: u64): u64 {
     asm {
         mov rsi, rdi
@@ -301,37 +300,22 @@ func elf_check_header(addr: u64): u64 {
     }
 }
 
-# elf_get_entry(addr: u64): u64
 func elf_get_entry(addr: u64): u64 {
-    asm {
-        mov rax, [rdi + 24]
-    }
+    asm { mov rax, [rdi + 24] }
 }
 
-# elf_get_phoff(addr: u64): u64
 func elf_get_phoff(addr: u64): u64 {
-    asm {
-        mov rax, [rdi + 32]
-    }
+    asm { mov rax, [rdi + 32] }
 }
 
-# elf_get_phnum(addr: u64): u64
 func elf_get_phnum(addr: u64): u64 {
-    asm {
-        mov ax, [rdi + 56]
-    }
+    asm { mov ax, [rdi + 56] }
 }
 
-# elf_get_phentsize(addr: u64): u64
 func elf_get_phentsize(addr: u64): u64 {
-    asm {
-        mov ax, [rdi + 54]
-    }
+    asm { mov ax, [rdi + 54] }
 }
 
-# elf_load_segments(src: u64, dest: u64): u64
-# Loads all PT_LOAD segments from ELF at src into memory at dest
-# Returns entry point address, or 0 on error
 func elf_load_segments(src: u64, dest: u64): u64 {
     asm {
         push rbx
@@ -411,25 +395,19 @@ func elf_load_segments(src: u64, dest: u64): u64 {
     }
 }
 
-# exec_binary(path: string): u64
-# Loads an ELF binary from the boot FS and executes it at BIN_BASE
-# Returns 0 on success, 1 on error
 func exec_binary(path: string): u64 {
     asm {
         push rbx
         push r12
 
-        mov r12, rdi        ; r12 = path
+        mov r12, rdi
 
-        ; Open the file
         call fs_open
         test rax, rax
         jz .error
 
-        mov rbx, rax        ; rbx = inode
+        mov rbx, rax
 
-        ; Read the file into a scratch buffer at BIN_BASE
-        ; First, read the header to check it
         mov rdi, rbx
         mov rsi, BIN_BASE
         mov rdx, 64
@@ -437,28 +415,24 @@ func exec_binary(path: string): u64 {
         test rax, rax
         jz .error
 
-        ; Check ELF header
         mov rdi, BIN_BASE
         call elf_check_header
         test rax, rax
         jz .error
 
-        ; Read the full file into BIN_BASE + 0x10000 (scratch area)
         mov rdi, rbx
         mov rsi, BIN_BASE
-        mov rdx, 0x10000     ; 64KB max
+        mov rdx, 0x10000
         call fs_read
         test rax, rax
         jz .error
 
-        ; Load segments from scratch to BIN_BASE
         mov rdi, BIN_BASE
         mov rsi, BIN_BASE
         call elf_load_segments
         test rax, rax
         jz .error
 
-        ; Call the entry point
         call rax
 
         xor rax, rax
@@ -472,16 +446,13 @@ func exec_binary(path: string): u64 {
     }
 }
 
-# path_resolve(name: string): string
-# Searches /bin/ for name.elf, returns full path or empty string
 func path_resolve(name: string): string {
     asm {
         push rbx
         push r12
 
-        mov r12, rdi        ; r12 = name
+        mov r12, rdi
 
-        ; Build path: "/bin/" + name + ".elf"
         lea rbx, [rel path_buf]
         mov byte [rbx], '/'
         mov byte [rbx + 1], 'b'
@@ -489,7 +460,6 @@ func path_resolve(name: string): string {
         mov byte [rbx + 3], 'n'
         mov byte [rbx + 4], '/'
 
-        ; Copy name
         mov rsi, r12
         lea rdi, [rbx + 5]
     .copy_name:
@@ -508,7 +478,6 @@ func path_resolve(name: string): string {
         mov byte [rdi + 3], 'f'
         mov byte [rdi + 4], 0
 
-        ; Try to open it
         lea rdi, [rbx]
         call fs_open
         test rax, rax
@@ -562,7 +531,6 @@ func read_line(): string {
         jz .wait
         mov dx, COM1_DATA
         in al, dx
-        ; Skip non-printable characters (except CR/LF/backspace)
         cmp al, 0x20
         jb .check_ctrl
         jmp .process
@@ -573,7 +541,7 @@ func read_line(): string {
         je .process
         cmp al, 0x08
         je .process
-        jmp .loop        ; skip this character
+        jmp .loop
     .process:
         push rax
         mov dx, COM1_LSR
@@ -590,7 +558,6 @@ func read_line(): string {
         je .done
         cmp al, 0x08
         jne .store
-        ; Backspace - remove last character
         cmp rcx, 0
         je .loop
         dec rcx
@@ -606,38 +573,31 @@ func read_line(): string {
     }
 }
 
-# exec_cmd(cmd: string) — cmd in rdi
-# First checks module registry, then tries PATH resolution
 func exec_cmd(cmd: string) {
     asm {
         push rbx
         push r12
 
-        mov r12, rdi        ; r12 = cmd string
+        mov r12, rdi
 
-        ; First, check module registry for a registered command
         mov rdi, r12
         call find_cmd_impl
         test rax, rax
         jz .try_path
-        ; Found a registered command handler — call it
         call rax
         jmp .done
 
     .try_path:
-        ; Try to resolve as a binary in /bin/
         mov rdi, r12
         call path_resolve
         test rax, rax
         jz .not_found
 
-        ; Found a binary — execute it
         mov rdi, rax
         call exec_binary
         jmp .done
 
     .not_found:
-        ; Build "Unknown command: <name>\r\n" in path_buf
         lea rdi, [rel unknown_str]
         call serial_puts
         mov rdi, r12
@@ -650,16 +610,6 @@ func exec_cmd(cmd: string) {
     }
 }
 
-func serial_newline() {
-    asm {
-        mov al, 0x0D
-        call serial_putc
-        mov al, 0x0A
-        call serial_putc
-    }
-}
-
-# serial_flush() — drain any pending input data
 func serial_flush() {
     asm {
         mov dx, COM1_LSR
@@ -772,7 +722,6 @@ func module_registry_init() {
     }
 }
 
-# reg_cmd_impl(name: string, handler: u64) — name in rdi, handler in rsi
 func reg_cmd_impl(name: string, handler: u64) {
     asm {
         mov rcx, [rel cmd_count]
@@ -787,7 +736,6 @@ func reg_cmd_impl(name: string, handler: u64) {
     }
 }
 
-# reg_hook_impl(id: u64, handler: u64) — id in rdi, handler in rsi
 func reg_hook_impl(id: u64, handler: u64) {
     asm {
         mov rcx, [rel hook_count]
@@ -802,7 +750,6 @@ func reg_hook_impl(id: u64, handler: u64) {
     }
 }
 
-# find_cmd_impl(name: string): u64 — name in rdi
 func find_cmd_impl(name: string): u64 {
     asm {
         mov rcx, [rel cmd_count]
@@ -833,7 +780,6 @@ func find_cmd_impl(name: string): u64 {
     }
 }
 
-# find_hook_impl(id: u64): u64 — id in rdi
 func find_hook_impl(id: u64): u64 {
     asm {
         mov rcx, [rel hook_count]
@@ -851,7 +797,6 @@ func find_hook_impl(id: u64): u64 {
     }
 }
 
-# unreg_cmd_impl(name: string) — name in rdi
 func unreg_cmd_impl(name: string) {
     asm {
         mov rcx, [rel cmd_count]
@@ -926,7 +871,6 @@ func fs_init() {
     }
 }
 
-# create_dir(name: string, slot: u64) — name in rdi, slot ptr in rsi
 func create_dir(name: string, slot: u64) {
     asm {
         mov [rsi], rdi
@@ -934,7 +878,6 @@ func create_dir(name: string, slot: u64) {
     }
 }
 
-# fs_open(path: string): u64 — path in rdi
 func fs_open(path: string): u64 {
     asm {
         mov rsi, rdi
@@ -1018,7 +961,6 @@ func main(): u64 {
         xor al, al
         rep stosb
     }
-    data_init()
     serial_init()
     serial_puts("\r\n\r\n")
     serial_puts("========================================\r\n")
