@@ -1,0 +1,191 @@
+# Aether OS — ELF64 Loader
+# Parses ELF64 headers, loads PT_LOAD segments, returns entry point
+# Compiled with: aether --target kernel
+
+# ELF64 header offsets
+const EI_NIDENT = 16
+const ELFCLASS64 = 2
+const ELFDATA2LSB = 1
+const ET_EXEC = 2
+const EM_X86_64 = 62
+const PT_LOAD = 1
+
+# elf_check_header(addr: u64): u64 — returns 1 if valid, 0 if not
+# Checks magic, class, endianness, type, machine
+func elf_check_header(addr: u64): u64 {
+    asm {
+        mov rsi, rdi
+        ; Check magic: 0x7F 'E' 'L' 'F'
+        cmp byte [rsi], 0x7F
+        jne .fail
+        cmp byte [rsi + 1], 'E'
+        jne .fail
+        cmp byte [rsi + 2], 'L'
+        jne .fail
+        cmp byte [rsi + 3], 'F'
+        jne .fail
+        ; Check class: 64-bit (2)
+        cmp byte [rsi + 4], ELFCLASS64
+        jne .fail
+        ; Check endianness: little-endian (1)
+        cmp byte [rsi + 5], ELFDATA2LSB
+        jne .fail
+        ; Check type: ET_EXEC (2)
+        mov ax, [rsi + 16]
+        cmp ax, ET_EXEC
+        jne .fail
+        ; Check machine: x86_64 (62)
+        mov ax, [rsi + 18]
+        cmp ax, EM_X86_64
+        jne .fail
+        mov rax, 1
+        ret
+    .fail:
+        xor rax, rax
+    }
+    return 0
+}
+
+# elf_get_entry(addr: u64): u64 — returns entry point address
+func elf_get_entry(addr: u64): u64 {
+    asm {
+        mov rax, [rdi + 24]  ; e_entry at offset 24
+    }
+    return 0
+}
+
+# elf_get_phoff(addr: u64): u64 — returns program header offset
+func elf_get_phoff(addr: u64): u64 {
+    asm {
+        mov rax, [rdi + 32]  ; e_phoff at offset 32
+    }
+    return 0
+}
+
+# elf_get_phnum(addr: u64): u64 — returns number of program headers
+func elf_get_phnum(addr: u64): u64 {
+    asm {
+        mov ax, [rdi + 56]   ; e_phnum at offset 56
+    }
+    return 0
+}
+
+# elf_get_phentsize(addr: u64): u64 — returns program header entry size
+func elf_get_phentsize(addr: u64): u64 {
+    asm {
+        mov ax, [rdi + 54]   ; e_phentsize at offset 54
+    }
+    return 0
+}
+
+# elf_load_segments(src: u64, dest: u64): u64
+# Loads all PT_LOAD segments from ELF at src into memory at dest
+# Returns entry point address, or 0 on error
+func elf_load_segments(src: u64, dest: u64): u64 {
+    asm {
+        push rbx
+        push r12
+        push r13
+        push r14
+        push r15
+
+        mov r12, rdi        ; r12 = src (ELF base)
+        mov r13, rsi        ; r13 = dest (load base)
+
+        ; Check header
+        mov rdi, r12
+        call elf_check_header
+        test rax, rax
+        jz .error
+
+        ; Get entry point
+        mov rdi, r12
+        call elf_get_entry
+        mov r14, rax        ; r14 = entry point
+
+        ; Get program header offset
+        mov rdi, r12
+        call elf_get_phoff
+        mov r15, rax        ; r15 = phoff
+
+        ; Get number of program headers
+        mov rdi, r12
+        call elf_get_phnum
+        mov rbx, rax        ; rbx = phnum
+
+        ; Get program header entry size
+        mov rdi, r12
+        call elf_get_phentsize
+        mov rcx, rax        ; rcx = phentsize
+
+        xor r8, r8          ; r8 = ph index
+
+    .ph_loop:
+        cmp r8, rbx
+        jae .done
+
+        ; Calculate program header address: src + phoff + (index * phentsize)
+        mov rax, r15
+        mov rdx, r8
+        mul rcx
+        add rax, r12
+        mov r9, rax         ; r9 = program header address
+
+        ; Check p_type (offset 0 in phdr) == PT_LOAD (1)
+        mov eax, [r9]
+        cmp eax, PT_LOAD
+        jne .next_ph
+
+        ; p_offset (offset 8) — file offset of segment
+        mov rax, [r9 + 8]
+
+        ; p_filesz (offset 32) — size in file
+        mov r10, [r9 + 32]
+
+        ; p_vaddr (offset 16) — virtual address
+        mov r11, [r9 + 16]
+
+        ; p_memsz (offset 40) — size in memory
+        mov rcx, [r9 + 40]
+
+        ; Copy segment from src + p_offset to dest + p_vaddr
+        ; Source: r12 + rax (ELF base + file offset)
+        ; Dest:   r13 + r11 (load base + virtual address)
+        lea rsi, [r12 + rax]
+        lea rdi, [r13 + r11]
+        mov rcx, r10        ; copy p_filesz bytes
+        cld
+        rep movsb
+
+        ; Zero BSS: if p_memsz > p_filesz, zero the rest
+        mov rax, [r9 + 40]  ; p_memsz
+        mov rcx, [r9 + 32]  ; p_filesz
+        cmp rax, rcx
+        jbe .next_ph
+        sub rax, rcx        ; bytes to zero = p_memsz - p_filesz
+        mov rcx, rax
+        lea rdi, [r13 + r11]
+        add rdi, [r9 + 32]  ; dest + p_filesz
+        xor al, al
+        rep stosb
+
+    .next_ph:
+        inc r8
+        jmp .ph_loop
+
+    .done:
+        mov rax, r14        ; return entry point
+        jmp .out
+
+    .error:
+        xor rax, rax
+
+    .out:
+        pop r15
+        pop r14
+        pop r13
+        pop r12
+        pop rbx
+    }
+    return 0
+}
