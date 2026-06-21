@@ -1,0 +1,724 @@
+# Aether OS — Kernel Main
+# Written entirely in Aether, compiled with aether --target kernel
+# Boot chain (stage1, stage2, boot.S) remains in NASM
+# Asm blocks use SysV ABI registers: rdi=arg1, rsi=arg2, rdx=arg3
+
+const COM1_DATA = 0x3F8
+const COM1_IER = 0x3F9
+const COM1_LCR = 0x3FB
+const COM1_MCR = 0x3FC
+const COM1_LSR = 0x3FD
+const LSR_THR_EMPTY = 0x20
+
+const BITMAP_ADDR = 0xD000
+const MEM_START = 0x11E6000
+const MEM_END = 0x10000000
+const PAGE_SIZE = 4096
+
+const MODULE_REGISTRY = 0x4000
+const SYSCALL_PAGE = 0x5000
+const BIN_BASE = 0x2000000
+const MOD_SLOT_BASE = 0x2100000
+const MOD_SLOT_SIZE = 0x10000
+const MOD_SLOT_COUNT = 8
+
+const INODE_ROOT = 1
+const MAX_CMDS = 16
+const MAX_HOOKS = 8
+const MAX_INODES = 32
+
+# ============================================================
+# Data section setup — called once at boot
+# ============================================================
+
+func data_init() {
+    asm {
+        section .bss
+cmd_names:    resq 16
+cmd_handlers: resq 16
+hook_ids:     resq 8
+hook_handlers: resq 8
+cmd_count:    resq 1
+hook_count:   resq 1
+inode_table:  resq 96
+line_buf:     resb 256
+        section .data
+root_name:    db "/", 0
+bin_name:     db "bin", 0
+etc_name:     db "etc", 0
+lib_name:     db "lib", 0
+tmp_name:     db "tmp", 0
+dev_name:     db "dev", 0
+help_str:     db "help", 0
+ls_str:       db "ls", 0
+echo_str:     db "echo", 0
+reboot_str:   db "reboot", 0
+help_text:    db 0x0D, 0x0A, "Available commands: help, ls, echo <text>, reboot", 0x0D, 0x0A, 0
+ls_result:    db 0x0D, 0x0A, "bin  etc  lib  tmp  dev", 0x0D, 0x0A, 0
+unknown_str:  db 0x0D, 0x0A, "Unknown command", 0x0D, 0x0A, 0
+hex_chars:    db "0123456789ABCDEF", 0
+        section .text
+    }
+}
+
+# ============================================================
+# Serial I/O
+# ============================================================
+
+func serial_init() {
+    asm {
+        mov dx, COM1_IER
+        xor al, al
+        out dx, al
+        mov dx, COM1_LCR
+        mov al, 0x80
+        out dx, al
+        mov dx, COM1_DATA
+        mov al, 0x01
+        out dx, al
+        mov dx, COM1_IER
+        xor al, al
+        out dx, al
+        mov dx, COM1_LCR
+        mov al, 0x03
+        out dx, al
+        mov dx, COM1_MCR
+        mov al, 0x0B
+        out dx, al
+    }
+}
+
+# serial_putc(c: byte) — c in rdi
+func serial_putc(c: byte) {
+    asm {
+        mov dx, COM1_LSR
+    .wait:
+        in al, dx
+        test al, LSR_THR_EMPTY
+        jz .wait
+        mov dx, COM1_DATA
+        mov al, dil
+        out dx, al
+    }
+}
+
+# serial_puts(s: string) — s pointer in rdi
+func serial_puts(s: string) {
+    asm {
+        mov rsi, rdi
+    .loop:
+        lodsb
+        test al, al
+        jz .done
+        mov dx, COM1_LSR
+    .wait:
+        in al, dx
+        test al, LSR_THR_EMPTY
+        jz .wait
+        mov dx, COM1_DATA
+        out dx, al
+        jmp .loop
+    .done:
+    }
+}
+
+# serial_puthex(val: u64) — val in rdi
+func serial_puthex(val: u64) {
+    asm {
+        mov rsi, hex_chars
+        mov rcx, 16
+        mov r8, rdi
+    .loop:
+        mov rax, r8
+        mov r9, rcx
+        dec r9
+        shl r9, 2
+        push rcx
+        mov cl, r9b
+        shr rax, cl
+        pop rcx
+        and al, 0x0F
+        mov al, [rsi + rax]
+        mov dx, COM1_LSR
+    .wait:
+        in al, dx
+        test al, LSR_THR_EMPTY
+        jz .wait
+        mov dx, COM1_DATA
+        out dx, al
+        loop .loop
+    }
+}
+
+# serial_putdec(val: u64) — val in rdi
+func serial_putdec(val: u64) {
+    asm {
+        mov rax, rdi
+        test rax, rax
+        jnz .convert
+        mov dx, COM1_LSR
+    .wait0:
+        in al, dx
+        test al, LSR_THR_EMPTY
+        jz .wait0
+        mov dx, COM1_DATA
+        mov al, '0'
+        out dx, al
+        ret
+    .convert:
+        mov rcx, 0
+        mov rbx, 10
+    .divloop:
+        xor rdx, rdx
+        div rbx
+        add dl, '0'
+        push rdx
+        inc rcx
+        test rax, rax
+        jnz .divloop
+    .printloop:
+        mov dx, COM1_LSR
+    .wait:
+        in al, dx
+        test al, LSR_THR_EMPTY
+        jz .wait
+        mov dx, COM1_DATA
+        pop rax
+        out dx, al
+        loop .printloop
+    }
+}
+
+# ============================================================
+# Physical Page Allocator
+# ============================================================
+
+func init_pages() {
+    asm {
+        mov rdi, BITMAP_ADDR
+        mov rcx, 7375
+        xor al, al
+        rep stosb
+    }
+}
+
+func alloc_page(): u64 {
+    asm {
+        mov rbx, BITMAP_ADDR
+        xor rcx, rcx
+    .loop:
+        mov rax, rcx
+        shr rax, 3
+        mov dl, [rbx + rax]
+        mov rax, rcx
+        and rax, 7
+        bt rdx, rax
+        jnc .found
+        inc rcx
+        cmp rcx, 59000
+        jb .loop
+        xor rax, rax
+        ret
+    .found:
+        mov rax, rcx
+        shr rax, 3
+        mov rdx, rcx
+        and rdx, 7
+        bts qword [rbx + rax], rdx
+        mov rax, rcx
+        shl rax, 12
+        add rax, MEM_START
+    }
+    return 0
+}
+
+# free_page(addr: u64) — addr in rdi
+func free_page(addr: u64) {
+    asm {
+        mov rax, rdi
+        sub rax, MEM_START
+        shr rax, 12
+        mov rbx, BITMAP_ADDR
+        mov rcx, rax
+        shr rcx, 3
+        mov rdx, rax
+        and rdx, 7
+        btr qword [rbx + rcx], rdx
+    }
+}
+
+# ============================================================
+# String comparison helper
+# strcmp(s1: string, s2: string) — s1 in rdi, s2 in rsi
+# ============================================================
+
+func strcmp(s1: string, s2: string): u64 {
+    asm {
+    .loop:
+        mov al, [rdi]
+        mov dl, [rsi]
+        cmp al, dl
+        jne .diff
+        test al, al
+        jz .same
+        inc rdi
+        inc rsi
+        jmp .loop
+    .diff:
+        xor rax, rax
+        inc rax
+        ret
+    .same:
+        xor rax, rax
+    }
+    return 1
+}
+
+# ============================================================
+# Shell
+# ============================================================
+
+func read_line(): string {
+    asm {
+        lea rbx, [rel line_buf]
+        xor rcx, rcx
+    .loop:
+        mov dx, COM1_LSR
+    .wait:
+        in al, dx
+        test al, 1
+        jz .wait
+        mov dx, COM1_DATA
+        in al, dx
+        push rax
+        mov dx, COM1_LSR
+    .wait_echo:
+        in al, dx
+        test al, LSR_THR_EMPTY
+        jz .wait_echo
+        mov dx, COM1_DATA
+        pop rax
+        out dx, al
+        cmp al, 0x0D
+        je .done
+        cmp al, 0x0A
+        je .done
+        mov [rbx + rcx], al
+        inc rcx
+        cmp rcx, 255
+        jb .loop
+    .done:
+        mov byte [rbx + rcx], 0
+        mov rax, rbx
+    }
+    return 0
+}
+
+# exec_cmd(cmd: string) — cmd in rdi
+func exec_cmd(cmd: string) {
+    asm {
+        mov rsi, rdi
+        lea rdi, [rel help_str]
+        call strcmp
+        test rax, rax
+        jnz .check_ls
+        lea rdi, [rel help_text]
+        call serial_puts
+        ret
+    .check_ls:
+        lea rdi, [rel ls_str]
+        call strcmp
+        test rax, rax
+        jnz .check_echo
+        lea rdi, [rel ls_result]
+        call serial_puts
+        ret
+    .check_echo:
+        lea rdi, [rel echo_str]
+        call strcmp
+        test rax, rax
+        jnz .check_reboot
+        add rsi, 5
+        mov rdi, rsi
+        call serial_puts
+        mov al, 0x0D
+        call serial_putc
+        mov al, 0x0A
+        call serial_putc
+        ret
+    .check_reboot:
+        lea rdi, [rel reboot_str]
+        call strcmp
+        test rax, rax
+        jnz .unknown
+        mov al, 0xFE
+        out 0x64, al
+    .unknown:
+        lea rdi, [rel unknown_str]
+        call serial_puts
+    }
+}
+
+func shell_main() {
+    serial_puts("\r\nAether OS Shell v0.1\r\n")
+    serial_puts("Type 'help' for available commands.\r\n")
+
+    while true {
+        serial_puts("Aether> ")
+        let cmd = read_line()
+        exec_cmd(cmd)
+    }
+}
+
+# ============================================================
+# Syscall Page (0x5000)
+# ============================================================
+
+func syscall_init() {
+    asm {
+        mov rbx, SYSCALL_PAGE
+        lea rax, [rel sys_putc_stub]
+        mov [rbx], rax
+        lea rax, [rel sys_puts_stub]
+        mov [rbx + 8], rax
+        lea rax, [rel sys_open_stub]
+        mov [rbx + 16], rax
+        lea rax, [rel sys_read_stub]
+        mov [rbx + 24], rax
+        lea rax, [rel sys_readdir_stub]
+        mov [rbx + 32], rax
+        lea rax, [rel sys_getcwd_stub]
+        mov [rbx + 40], rax
+        lea rax, [rel sys_chdir_stub]
+        mov [rbx + 48], rax
+        lea rax, [rel sys_exit_stub]
+        mov [rbx + 56], rax
+        lea rax, [rel sys_booleval_stub]
+        mov [rbx + 64], rax
+    }
+}
+
+func sys_putc_stub(c: byte) {
+    serial_putc(c)
+}
+
+func sys_puts_stub(s: string) {
+    serial_puts(s)
+}
+
+func sys_open_stub(path: string): u64 {
+    return 0
+}
+
+func sys_read_stub(ino: u64, buf: string, len: u64): u64 {
+    return 0
+}
+
+func sys_readdir_stub(ino: u64, buf: string): u64 {
+    return 0
+}
+
+func sys_getcwd_stub(): u64 {
+    return 1
+}
+
+func sys_chdir_stub(ino: u64) {
+}
+
+func sys_exit_stub() {
+    asm { ret }
+}
+
+func sys_booleval_stub(v: u64): u64 {
+    return v
+}
+
+# ============================================================
+# Module Registry (0x4000)
+# ============================================================
+
+func module_registry_init() {
+    asm {
+        mov rbx, MODULE_REGISTRY
+        lea rax, [rel reg_cmd_impl]
+        mov [rbx], rax
+        lea rax, [rel reg_hook_impl]
+        mov [rbx + 8], rax
+        lea rax, [rel find_cmd_impl]
+        mov [rbx + 16], rax
+        lea rax, [rel find_hook_impl]
+        mov [rbx + 24], rax
+        lea rax, [rel unreg_cmd_impl]
+        mov [rbx + 32], rax
+    }
+}
+
+# reg_cmd_impl(name: string, handler: u64) — name in rdi, handler in rsi
+func reg_cmd_impl(name: string, handler: u64) {
+    asm {
+        mov rcx, [rel cmd_count]
+        cmp rcx, MAX_CMDS
+        jae .done
+        lea rbx, [rel cmd_names]
+        mov [rbx + rcx*8], rdi
+        lea rbx, [rel cmd_handlers]
+        mov [rbx + rcx*8], rsi
+        inc qword [rel cmd_count]
+    .done:
+    }
+}
+
+# reg_hook_impl(id: u64, handler: u64) — id in rdi, handler in rsi
+func reg_hook_impl(id: u64, handler: u64) {
+    asm {
+        mov rcx, [rel hook_count]
+        cmp rcx, MAX_HOOKS
+        jae .done
+        lea rbx, [rel hook_ids]
+        mov [rbx + rcx*8], rdi
+        lea rbx, [rel hook_handlers]
+        mov [rbx + rcx*8], rsi
+        inc qword [rel hook_count]
+    .done:
+    }
+}
+
+# find_cmd_impl(name: string): u64 — name in rdi
+func find_cmd_impl(name: string): u64 {
+    asm {
+        mov rcx, [rel cmd_count]
+        xor rax, rax
+    .loop:
+        cmp rcx, 0
+        jz .done
+        dec rcx
+        lea rbx, [rel cmd_names]
+        mov rsi, [rbx + rcx*8]
+        mov r8, rdi
+    .cmp:
+        mov al, [r8]
+        mov dl, [rsi]
+        cmp al, dl
+        jne .next
+        test al, al
+        jz .found
+        inc r8
+        inc rsi
+        jmp .cmp
+    .next:
+        jmp .loop
+    .found:
+        lea rbx, [rel cmd_handlers]
+        mov rax, [rbx + rcx*8]
+    .done:
+    }
+    return 0
+}
+
+# find_hook_impl(id: u64): u64 — id in rdi
+func find_hook_impl(id: u64): u64 {
+    asm {
+        mov rcx, [rel hook_count]
+        xor rax, rax
+    .loop:
+        cmp rcx, 0
+        jz .done
+        dec rcx
+        lea rbx, [rel hook_ids]
+        cmp [rbx + rcx*8], rdi
+        jne .loop
+        lea rbx, [rel hook_handlers]
+        mov rax, [rbx + rcx*8]
+    .done:
+    }
+    return 0
+}
+
+# unreg_cmd_impl(name: string) — name in rdi
+func unreg_cmd_impl(name: string) {
+    asm {
+        mov rcx, [rel cmd_count]
+    .loop:
+        cmp rcx, 0
+        jz .done
+        dec rcx
+        lea rbx, [rel cmd_names]
+        mov rsi, [rbx + rcx*8]
+        mov r8, rdi
+    .cmp:
+        mov al, [r8]
+        mov dl, [rsi]
+        cmp al, dl
+        jne .next
+        test al, al
+        jz .remove
+        inc r8
+        inc rsi
+        jmp .cmp
+    .next:
+        jmp .loop
+    .remove:
+        mov rdx, [rel cmd_count]
+        dec rdx
+    .shift:
+        cmp rcx, rdx
+        jae .done_shift
+        lea rbx, [rel cmd_names]
+        mov rax, [rbx + (rcx+1)*8]
+        mov [rbx + rcx*8], rax
+        lea rbx, [rel cmd_handlers]
+        mov rax, [rbx + (rcx+1)*8]
+        mov [rbx + rcx*8], rax
+        inc rcx
+        jmp .shift
+    .done_shift:
+        dec qword [rel cmd_count]
+    .done:
+    }
+}
+
+# ============================================================
+# Boot Filesystem
+# ============================================================
+
+func fs_init() {
+    asm {
+        lea rdi, [rel inode_table]
+        mov rcx, 96
+        xor al, al
+        rep stosb
+        mov qword [rel inode_table + 0], INODE_ROOT
+        mov qword [rel inode_table + 8], 0
+        lea rax, [rel root_name]
+        mov [rel inode_table + 16], rax
+        lea rdi, [rel bin_name]
+        lea rsi, [rel inode_table + 24]
+        call create_dir
+        lea rdi, [rel etc_name]
+        lea rsi, [rel inode_table + 48]
+        call create_dir
+        lea rdi, [rel lib_name]
+        lea rsi, [rel inode_table + 72]
+        call create_dir
+        lea rdi, [rel tmp_name]
+        lea rsi, [rel inode_table + 96]
+        call create_dir
+        lea rdi, [rel dev_name]
+        lea rsi, [rel inode_table + 120]
+        call create_dir
+    }
+}
+
+# create_dir(name: string, slot: u64) — name in rdi, slot ptr in rsi
+func create_dir(name: string, slot: u64) {
+    asm {
+        mov [rsi], rdi
+        mov qword [rsi + 8], 1
+    }
+}
+
+# fs_open(path: string): u64 — path in rdi
+func fs_open(path: string): u64 {
+    asm {
+        mov rsi, rdi
+        mov al, [rsi]
+        cmp al, '/'
+        jne .not_found
+        inc rsi
+        mov rdi, rsi
+    .find_end:
+        mov al, [rdi]
+        test al, al
+        jz .check_root
+        inc rdi
+        jmp .find_end
+    .check_root:
+        cmp rsi, rdi
+        je .found_root
+        lea rbx, [rel inode_table]
+        xor rcx, rcx
+    .loop:
+        cmp rcx, MAX_INODES
+        jae .not_found
+        mov rax, [rbx + rcx*8 + 16]
+        test rax, rax
+        jz .next
+        mov r8, rsi
+        mov r9, rax
+    .cmp:
+        mov al, [r8]
+        mov dl, [r9]
+        cmp al, dl
+        jne .next
+        test al, al
+        jz .found
+        inc r8
+        inc r9
+        jmp .cmp
+    .next:
+        inc rcx
+        jmp .loop
+    .found_root:
+        mov rax, INODE_ROOT
+        ret
+    .found:
+        mov rax, rcx
+        inc rax
+        ret
+    .not_found:
+        xor rax, rax
+    }
+    return 0
+}
+
+func fs_read(ino: u64, buf: string, len: u64): u64 {
+    return 0
+}
+
+func fs_readdir(ino: u64, buf: string): u64 {
+    return 0
+}
+
+func fs_getcwd(): u64 {
+    return INODE_ROOT
+}
+
+func fs_chdir(ino: u64) {
+}
+
+# ============================================================
+# Kernel Entry
+# ============================================================
+
+func main(): u64 {
+    data_init()
+    serial_init()
+    serial_puts("\r\n\r\n")
+    serial_puts("========================================\r\n")
+    serial_puts("  Aether OS v0.1 - Kernel Main\r\n")
+    serial_puts("========================================\r\n\r\n")
+
+    serial_puts("[1/5] Initializing page allocator... ")
+    init_pages()
+    serial_puts("OK\r\n")
+
+    serial_puts("[2/5] Initializing syscall page... ")
+    syscall_init()
+    serial_puts("OK\r\n")
+
+    serial_puts("[3/5] Initializing module registry... ")
+    module_registry_init()
+    serial_puts("OK\r\n")
+
+    serial_puts("[4/5] Initializing boot filesystem... ")
+    fs_init()
+    serial_puts("OK\r\n")
+
+    serial_puts("[5/5] Starting shell...\r\n\r\n")
+    shell_main()
+
+    while true {
+        asm { hlt }
+    }
+    return 0
+}
