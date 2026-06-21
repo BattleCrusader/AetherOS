@@ -36,20 +36,23 @@ DISK_IMG   = $(BUILD)/aether.img
 
 all: $(DISK_IMG)
 
+$(BUILD):
+	mkdir -p $(BUILD)
+
 # Stage 1 MBR (flat binary, 512 bytes) — compiled from Aether
-$(STAGE1_BIN): $(SRC_BOOT)/stage1.ae
+$(STAGE1_BIN): $(SRC_BOOT)/stage1.ae | $(BUILD)
 	$(AETHER) --target boot -O0 $< -o $@
 
 # Stage 2 loader (flat binary, 16KB) — compiled from Aether
-$(STAGE2_BIN): $(SRC_BOOT)/stage2.ae
+$(STAGE2_BIN): $(SRC_BOOT)/stage2.ae | $(BUILD)
 	$(AETHER) --target boot -O0 $< -o $@
 
 # Boot entry (flat binary) — compiled from Aether
-$(BOOT_BIN): $(SRC_BOOT)/boot.ae
+$(BOOT_BIN): $(SRC_BOOT)/boot.ae | $(BUILD)
 	$(AETHER) --target boot -O0 $< -o $@
 
 # Kernel — compiled from Aether source
-$(KERNEL_ELF): $(KERNEL_AE)
+$(KERNEL_ELF): $(KERNEL_AE) | $(BUILD)
 	$(AETHER) --target kernel -O0 -L tools/kernel.ld $(KERNEL_AE) -o $@
 
 # Convert kernel ELF to flat binary
