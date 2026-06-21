@@ -2,6 +2,8 @@
 # Written entirely in Aether, compiled with aether --target kernel
 # Boot chain (stage1, stage2, boot.S) remains in NASM
 # Asm blocks use SysV ABI registers: rdi=arg1, rsi=arg2, rdx=arg3
+# IMPORTANT: Do NOT put leave/ret inside asm blocks — the compiler
+# handles function prologue/epilogue automatically.
 
 const COM1_DATA = 0x3F8
 const COM1_IER = 0x3F9
@@ -64,7 +66,8 @@ func data_init() {
 }
 
 # ============================================================
-# Serial I/O
+# Serial I/O — asm blocks do NOT contain leave/ret
+# The compiler's function epilogue handles returns
 # ============================================================
 
 func serial_init() {
@@ -182,7 +185,7 @@ func serial_putdec(val: u64) {
         mov dx, COM1_DATA
         mov al, '0'
         out dx, al
-        leave; ret
+        ret
     .convert:
         mov rcx, 0
         mov rbx, 10
@@ -236,7 +239,7 @@ func alloc_page(): u64 {
         cmp rcx, 59000
         jb .loop
         xor rax, rax
-        leave; ret
+        ret
     .found:
         mov rax, rcx
         shr rax, 3
@@ -246,9 +249,8 @@ func alloc_page(): u64 {
         mov rax, rcx
         shl rax, 12
         add rax, MEM_START
-        leave; ret
+        ret
     }
-    return 0
 }
 
 # free_page(addr: u64) — addr in rdi
@@ -293,47 +295,38 @@ func elf_check_header(addr: u64): u64 {
         cmp ax, 62
         jne .fail
         mov rax, 1
-        leave; ret
+        ret
     .fail:
         xor rax, rax
     }
-    return 0
 }
 
 # elf_get_entry(addr: u64): u64
 func elf_get_entry(addr: u64): u64 {
     asm {
         mov rax, [rdi + 24]
-        leave; ret
     }
-    return 0
 }
 
 # elf_get_phoff(addr: u64): u64
 func elf_get_phoff(addr: u64): u64 {
     asm {
         mov rax, [rdi + 32]
-        leave; ret
     }
-    return 0
 }
 
 # elf_get_phnum(addr: u64): u64
 func elf_get_phnum(addr: u64): u64 {
     asm {
         mov ax, [rdi + 56]
-        leave; ret
     }
-    return 0
 }
 
 # elf_get_phentsize(addr: u64): u64
 func elf_get_phentsize(addr: u64): u64 {
     asm {
         mov ax, [rdi + 54]
-        leave; ret
     }
-    return 0
 }
 
 # elf_load_segments(src: u64, dest: u64): u64
@@ -415,9 +408,7 @@ func elf_load_segments(src: u64, dest: u64): u64 {
         pop r13
         pop r12
         pop rbx
-        leave; ret
     }
-    return 0
 }
 
 # exec_binary(path: string): u64
@@ -453,7 +444,6 @@ func exec_binary(path: string): u64 {
         jz .error
 
         ; Read the full file into BIN_BASE + 0x10000 (scratch area)
-        ; We need to know the file size. For now, read up to 64KB.
         mov rdi, rbx
         mov rsi, BIN_BASE
         mov rdx, 0x10000     ; 64KB max
@@ -469,7 +459,6 @@ func exec_binary(path: string): u64 {
         jz .error
 
         ; Call the entry point
-        ; For now, just call it with no arguments
         call rax
 
         xor rax, rax
@@ -480,9 +469,7 @@ func exec_binary(path: string): u64 {
     .out:
         pop r12
         pop rbx
-        leave; ret
     }
-    return 1
 }
 
 # path_resolve(name: string): string
@@ -495,7 +482,6 @@ func path_resolve(name: string): string {
         mov r12, rdi        ; r12 = name
 
         ; Build path: "/bin/" + name + ".elf"
-        ; We'll use a small buffer in BSS for this
         lea rbx, [rel path_buf]
         mov byte [rbx], '/'
         mov byte [rbx + 1], 'b'
@@ -537,7 +523,6 @@ func path_resolve(name: string): string {
         pop r12
         pop rbx
     }
-    return 0
 }
 
 func strcmp(s1: string, s2: string): u64 {
@@ -553,14 +538,12 @@ func strcmp(s1: string, s2: string): u64 {
         inc rsi
         jmp .loop
     .diff:
-        xor rax, rax
-        inc rax
-        leave; ret
+        mov rax, 1
+        ret
     .same:
         xor rax, rax
-        leave; ret
+        ret
     }
-    return 1
 }
 
 # ============================================================
@@ -579,7 +562,7 @@ func read_line(): string {
         jz .wait
         mov dx, COM1_DATA
         in al, dx
-        ; Skip non-printable characters (except CR/LF)
+        ; Skip non-printable characters (except CR/LF/backspace)
         cmp al, 0x20
         jb .check_ctrl
         jmp .process
@@ -620,9 +603,7 @@ func read_line(): string {
     .done:
         mov byte [rbx + rcx], 0
         mov rax, rbx
-        leave; ret
     }
-    return 0
 }
 
 # exec_cmd(cmd: string) — cmd in rdi
@@ -850,7 +831,6 @@ func find_cmd_impl(name: string): u64 {
         mov rax, [rbx + rcx*8]
     .done:
     }
-    return 0
 }
 
 # find_hook_impl(id: u64): u64 — id in rdi
@@ -869,7 +849,6 @@ func find_hook_impl(id: u64): u64 {
         mov rax, [rbx + rcx*8]
     .done:
     }
-    return 0
 }
 
 # unreg_cmd_impl(name: string) — name in rdi
@@ -998,15 +977,14 @@ func fs_open(path: string): u64 {
         jmp .loop
     .found_root:
         mov rax, INODE_ROOT
-        leave; ret
+        ret
     .found:
         mov rax, rcx
         inc rax
-        leave; ret
+        ret
     .not_found:
         xor rax, rax
     }
-    return 0
 }
 
 func fs_read(ino: u64, buf: string, len: u64): u64 {
