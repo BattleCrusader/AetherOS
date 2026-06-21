@@ -31,13 +31,13 @@ DISK_IMG   = $(BUILD)/aether.img
 
 all: $(DISK_IMG)
 
-# Stage 1 MBR (flat binary, 512 bytes)
-$(STAGE1_BIN): $(SRC_BOOT)/stage1.asm
-	$(ASM) -f bin -o $@ $<
+# Stage 1 MBR (flat binary, 512 bytes) — compiled from Aether
+$(STAGE1_BIN): $(SRC_BOOT)/stage1.ae
+	$(AETHER) --target boot -O0 $< -o $@
 
-# Stage 2 loader (flat binary, 16KB)
-$(STAGE2_BIN): $(SRC_BOOT)/stage2.asm
-	$(ASM) -f bin -o $@ $<
+# Stage 2 loader (flat binary, 16KB) — compiled from Aether
+$(STAGE2_BIN): $(SRC_BOOT)/stage2.ae
+	$(AETHER) --target boot -O0 $< -o $@
 
 # Boot entry (flat binary)
 $(BOOT_BIN): $(SRC_BOOT)/boot.S
