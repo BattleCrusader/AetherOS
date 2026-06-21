@@ -21,7 +21,8 @@
 - [x] libaether.ae: userspace runtime library (syscall wrappers)
 - [x] **Shell prompt fix**: removed redundant `return 0` from asm-block functions
 - [x] **Compiler fix**: suppress default return when asm block contains `ret`
-- [x] **Shell now boots, shows prompt, and waits for input** 🟢
+- [x] **Triple fault fix**: added `cli` before kernel call in boot.ae — hardware timer IRQ0 was firing while polling serial, causing GPF → double fault → triple fault with no IDT 🟢
+- [x] **Shell now boots, shows prompt, blocks at read_line, and responds to input** 🟢
 - [ ] Binary loading from disk (ATA PIO disk read in kernel)
 - [ ] Module verification (ABI checks, capability grants)
 - [ ] PATH configurable from env variable
@@ -88,6 +89,7 @@
 - **Output**: ELF64 flat binary for kernel; Mach-O 64 (macOS) or native ELF64 (Linux) for host-native
 - **Assembly**: NASM syntax only, inline asm blocks in Aether use SysV ABI registers (rdi=arg1, rsi=arg2)
 - **Asm block rule**: Do NOT put `leave; ret` inside asm blocks — the compiler's function epilogue handles returns. The compiler now detects `ret` inside asm blocks and suppresses the default return emission.
+- **Boot triple fault fix**: `cli` must be emitted before calling kernel from boot.ae — no IDT is set up, so any interrupt (e.g. hardware timer IRQ0) causes GPF → double fault → triple fault → CPU reset
 - **Memory model**: Stack-first with escape analysis; explicit `heap` keyword
 - **Exceptions**: Tagged union return encoding, no personality/unwind tables
 - **Generics**: Monomorphization (zero-cost, like Rust/C++)

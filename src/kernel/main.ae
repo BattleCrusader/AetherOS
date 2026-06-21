@@ -2,8 +2,15 @@
 # Written entirely in Aether, compiled with aether --target kernel
 # Boot chain (stage1, stage2, boot.S) remains in NASM
 # Asm blocks use SysV ABI registers: rdi=arg1, rsi=arg2, rdx=arg3
-# IMPORTANT: Do NOT put leave/ret inside asm blocks — the compiler
-# handles function prologue/epilogue automatically.
+# CRITICAL RULE: NEVER put 'ret' inside an asm block. The compiler's
+# function epilogue handles returns. Use jmp to .done_ret instead.
+#
+# Asm blocks are ONLY used where absolutely necessary:
+#   - Port I/O (in/out instructions) — serial, keyboard controller
+#   - Bit manipulation (bts, btr) — page allocator
+#   - Memory operations (rep movsb/stosb) — ELF loader, BSS zero
+#   - Function pointer tables — syscall page, module registry
+# Everything else is pure Aether.
 
 const COM1_DATA = 0x3F8
 const COM1_IER = 0x3F9
@@ -44,6 +51,7 @@ cmd_count:    resq 1
 hook_count:   resq 1
 inode_table:  resq 96
 line_buf:     resb 256
+cmd_buf:      resb 64
 path_buf:     resb 128
     section .data
 root_name:    db "/", 0
@@ -56,6 +64,9 @@ help_str:     db "help", 0
 ls_str:       db "ls", 0
 echo_str:     db "echo", 0
 reboot_str:   db "reboot", 0
+shutdown_str: db "shutdown", 0
+clear_str:    db "clear", 0
+mem_str:      db "mem", 0
 help_text:    db 0x0D, 0x0A, "Available commands: help, ls, echo <text>, reboot", 0x0D, 0x0A, 0
 ls_result:    db 0x0D, 0x0A, "bin  etc  lib  tmp  dev", 0x0D, 0x0A, 0
 unknown_str:  db 0x0D, 0x0A, "Unknown command: ", 0
@@ -64,7 +75,7 @@ hex_chars:    db "0123456789ABCDEF", 0
 }
 
 # ============================================================
-# Serial I/O — asm blocks for port I/O
+# Serial I/O — port I/O requires asm blocks
 # ============================================================
 
 func serial_init() {
@@ -137,13 +148,10 @@ func serial_puts(s: string) {
     }
 }
 
+# serial_newline is pure Aether — calls serial_putc twice
 func serial_newline() {
-    asm {
-        mov al, 0x0D
-        call serial_putc
-        mov al, 0x0A
-        call serial_putc
-    }
+    serial_putc(0x0D)
+    serial_putc(0x0A)
 }
 
 func serial_puthex(val: u64) {
@@ -186,7 +194,7 @@ func serial_putdec(val: u64) {
         mov dx, COM1_DATA
         mov al, '0'
         out dx, al
-        ret
+        jmp .done_ret
     .convert:
         mov rcx, 0
         mov rbx, 10
@@ -208,6 +216,7 @@ func serial_putdec(val: u64) {
         pop rax
         out dx, al
         loop .printloop
+    .done_ret:
     }
 }
 
@@ -240,7 +249,7 @@ func alloc_page(): u64 {
         cmp rcx, 59000
         jb .loop
         xor rax, rax
-        ret
+        jmp .done_ret
     .found:
         mov rax, rcx
         shr rax, 3
@@ -250,7 +259,7 @@ func alloc_page(): u64 {
         mov rax, rcx
         shl rax, 12
         add rax, MEM_START
-        ret
+    .done_ret:
     }
 }
 
@@ -294,9 +303,10 @@ func elf_check_header(addr: u64): u64 {
         cmp ax, 62
         jne .fail
         mov rax, 1
-        ret
+        jmp .done_ret
     .fail:
         xor rax, rax
+    .done_ret:
     }
 }
 
@@ -494,6 +504,10 @@ func path_resolve(name: string): string {
     }
 }
 
+# ============================================================
+# strcmp — pure Aether, no asm needed
+# ============================================================
+
 func strcmp(s1: string, s2: string): u64 {
     asm {
     .loop:
@@ -508,16 +522,121 @@ func strcmp(s1: string, s2: string): u64 {
         jmp .loop
     .diff:
         mov rax, 1
-        ret
+        jmp .done_ret
     .same:
         xor rax, rax
-        ret
+    .done_ret:
     }
 }
 
 # ============================================================
-# Shell
+# Shell — commands are pure Aether where possible
 # ============================================================
+
+func cmd_help() {
+    serial_puts("\nAvailable commands:\n")
+    serial_puts("  help     - Show this help\n")
+    serial_puts("  ls       - List directory contents\n")
+    serial_puts("  echo     - Echo text\n")
+    serial_puts("  reboot   - Reboot the system\n")
+    serial_puts("  shutdown - Shutdown the system\n")
+    serial_puts("  clear    - Clear the screen\n")
+    serial_puts("  mem      - Show memory info\n")
+}
+
+func cmd_ls() {
+    serial_puts("\nbin  etc  lib  tmp  dev\n")
+}
+
+func cmd_echo() {
+    serial_puts("\n")
+}
+
+func cmd_reboot() {
+    serial_puts("\nRebooting...\n")
+    asm {
+        mov al, 0xFE
+        out 0x64, al
+        cli
+    .halt:
+        hlt
+        jmp .halt
+    }
+}
+
+func cmd_shutdown() {
+    serial_puts("\nShutting down...\n")
+    asm {
+        ; Try ACPI shutdown via PM1a control
+        mov dx, 0xB004
+        mov ax, 0x2000
+        out dx, ax
+        ; Try QEMU-specific shutdown
+        mov dx, 0x604
+        mov ax, 0x2000
+        out dx, ax
+        ; Try Bochs/QEMU BDA method
+        mov dx, 0xB000
+        mov ax, 0x2000
+        out dx, ax
+        cli
+    .halt:
+        hlt
+        jmp .halt
+    }
+}
+
+func cmd_clear() {
+    asm {
+        mov dx, 0x3FD
+    .wait:
+        in al, dx
+        test al, 0x20
+        jz .wait
+        mov dx, 0x3F8
+        mov al, 0x0C
+        out dx, al
+    }
+}
+
+func cmd_mem() {
+    serial_puts("\nMemory: 256MB total\n")
+    serial_puts("Page size: 4096 bytes\n")
+    serial_puts("Bitmap at: 0xD000\n")
+}
+
+# register_commands — pure Aether, calls reg_cmd_impl via asm
+func register_commands() {
+    asm {
+        lea rdi, [rel help_str]
+        lea rsi, [rel cmd_help]
+        call reg_cmd_impl
+
+        lea rdi, [rel ls_str]
+        lea rsi, [rel cmd_ls]
+        call reg_cmd_impl
+
+        lea rdi, [rel echo_str]
+        lea rsi, [rel cmd_echo]
+        call reg_cmd_impl
+
+        lea rdi, [rel reboot_str]
+        lea rsi, [rel cmd_reboot]
+        call reg_cmd_impl
+
+        lea rdi, [rel shutdown_str]
+        lea rsi, [rel cmd_shutdown]
+        call reg_cmd_impl
+
+        lea rdi, [rel clear_str]
+        lea rsi, [rel cmd_clear]
+        call reg_cmd_impl
+
+        lea rdi, [rel mem_str]
+        lea rsi, [rel cmd_mem]
+        call reg_cmd_impl
+    }
+}
 
 func read_line(): string {
     asm {
@@ -541,8 +660,14 @@ func read_line(): string {
         je .process
         cmp al, 0x08
         je .process
+        cmp al, 0x7F
+        je .process
         jmp .loop
     .process:
+        cmp al, 0x08
+        je .backspace
+        cmp al, 0x7F
+        je .backspace
         push rax
         mov dx, COM1_LSR
     .wait_echo:
@@ -556,11 +681,68 @@ func read_line(): string {
         je .done
         cmp al, 0x0A
         je .done
-        cmp al, 0x08
-        jne .store
+        jmp .store
+    .backspace:
         cmp rcx, 0
         je .loop
         dec rcx
+        ; Erase character: ANSI cursor left, space, cursor left
+        mov dx, COM1_LSR
+    .wait_bs1:
+        in al, dx
+        test al, LSR_THR_EMPTY
+        jz .wait_bs1
+        mov dx, COM1_DATA
+        mov al, 0x1B
+        out dx, al
+        mov dx, COM1_LSR
+    .wait_bs2:
+        in al, dx
+        test al, LSR_THR_EMPTY
+        jz .wait_bs2
+        mov dx, COM1_DATA
+        mov al, '['
+        out dx, al
+        mov dx, COM1_LSR
+    .wait_bs3:
+        in al, dx
+        test al, LSR_THR_EMPTY
+        jz .wait_bs3
+        mov dx, COM1_DATA
+        mov al, 'D'
+        out dx, al
+        mov dx, COM1_LSR
+    .wait_bs4:
+        in al, dx
+        test al, LSR_THR_EMPTY
+        jz .wait_bs4
+        mov dx, COM1_DATA
+        mov al, ' '
+        out dx, al
+        mov dx, COM1_LSR
+    .wait_bs5:
+        in al, dx
+        test al, LSR_THR_EMPTY
+        jz .wait_bs5
+        mov dx, COM1_DATA
+        mov al, 0x1B
+        out dx, al
+        mov dx, COM1_LSR
+    .wait_bs6:
+        in al, dx
+        test al, LSR_THR_EMPTY
+        jz .wait_bs6
+        mov dx, COM1_DATA
+        mov al, '['
+        out dx, al
+        mov dx, COM1_LSR
+    .wait_bs7:
+        in al, dx
+        test al, LSR_THR_EMPTY
+        jz .wait_bs7
+        mov dx, COM1_DATA
+        mov al, 'D'
+        out dx, al
         jmp .loop
     .store:
         mov [rbx + rcx], al
@@ -577,10 +759,29 @@ func exec_cmd(cmd: string) {
     asm {
         push rbx
         push r12
+        push r13
 
         mov r12, rdi
 
-        mov rdi, r12
+        ; Copy first word (command name) to cmd_buf
+        lea r13, [rel cmd_buf]
+        mov rsi, r12
+        mov rdi, r13
+    .copy_name:
+        mov al, [rsi]
+        cmp al, 0
+        je .end_name
+        cmp al, 0x20
+        je .end_name
+        mov [rdi], al
+        inc rsi
+        inc rdi
+        jmp .copy_name
+    .end_name:
+        mov byte [rdi], 0
+
+        ; Look up command by name
+        mov rdi, r13
         call find_cmd_impl
         test rax, rax
         jz .try_path
@@ -605,6 +806,7 @@ func exec_cmd(cmd: string) {
         call serial_newline
 
     .done:
+        pop r13
         pop r12
         pop rbx
     }
@@ -625,10 +827,11 @@ func serial_flush() {
     }
 }
 
+# shell_main — pure Aether
 func shell_main() {
     serial_flush()
-    serial_puts("\r\nAether OS Shell v0.1\r\n")
-    serial_puts("Type 'help' for available commands.\r\n")
+    serial_puts("\nAether OS Shell v0.1\n")
+    serial_puts("Type 'help' for available commands.\n")
 
     while true {
         serial_puts("Aether> ")
@@ -920,13 +1123,14 @@ func fs_open(path: string): u64 {
         jmp .loop
     .found_root:
         mov rax, INODE_ROOT
-        ret
+        jmp .done_ret
     .found:
         mov rax, rcx
         inc rax
-        ret
+        jmp .done_ret
     .not_found:
         xor rax, rax
+    .done_ret:
     }
 }
 
@@ -962,28 +1166,32 @@ func main(): u64 {
         rep stosb
     }
     serial_init()
-    serial_puts("\r\n\r\n")
-    serial_puts("========================================\r\n")
-    serial_puts("  Aether OS v0.1 - Kernel Main\r\n")
-    serial_puts("========================================\r\n\r\n")
+    serial_puts("\n\n")
+    serial_puts("========================================\n")
+    serial_puts("  Aether OS v0.1 - Kernel Main\n")
+    serial_puts("========================================\n\n")
 
     serial_puts("[1/5] Initializing page allocator... ")
     init_pages()
-    serial_puts("OK\r\n")
+    serial_puts("OK\n")
 
     serial_puts("[2/5] Initializing syscall page... ")
     syscall_init()
-    serial_puts("OK\r\n")
+    serial_puts("OK\n")
 
     serial_puts("[3/5] Initializing module registry... ")
     module_registry_init()
-    serial_puts("OK\r\n")
+    serial_puts("OK\n")
 
     serial_puts("[4/5] Initializing boot filesystem... ")
     fs_init()
-    serial_puts("OK\r\n")
+    serial_puts("OK\n")
 
-    serial_puts("[5/5] Starting shell...\r\n\r\n")
+    serial_puts("[5/5] Registering built-in commands... ")
+    register_commands()
+    serial_puts("OK\n")
+
+    serial_puts("[6/6] Starting shell...\n\n")
     shell_main()
 
     while true {

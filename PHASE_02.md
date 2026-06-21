@@ -14,7 +14,9 @@ Phase 2 enables standalone ELF binaries in `/bin/`, module loading from `/lib/en
 - [x] Boot FS: populate /bin/ directory with compiled ELF binaries
 - [x] **Shell prompt fix**: removed redundant `return 0` from asm-block functions
 - [x] **Compiler fix**: suppress default return when asm block contains `ret`
+- [x] **Triple fault fix**: added `cli` before kernel call in boot.ae — hardware timer IRQ0 was firing while polling serial, causing GPF → double fault → triple fault with no IDT 🟢
 - [x] **Shell now boots, shows prompt, and waits for input** 🟢
+- [x] **Shell accepts commands and loops correctly** 🟢
 - [ ] Create `/bin/shutdown.ae` — standalone shutdown command
 - [ ] Create `/bin/cat.ae` — standalone cat command
 - [ ] Create `/bin/clear.ae` — standalone clear command
