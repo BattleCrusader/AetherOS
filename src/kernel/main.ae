@@ -87,6 +87,20 @@ func serial_init() {
         mov dx, COM1_MCR
         mov al, 0x03        ; DTR + RTS, NO loopback
         out dx, al
+        ; Reset FIFOs and drain stale data
+        mov dx, 0x3FA        ; FCR (COM1 + 2)
+        mov al, 0x07         ; enable + clear both FIFOs
+        out dx, al
+        mov dx, COM1_LSR
+    .drain:
+        in al, dx
+        test al, 1
+        jz .done
+        mov dx, COM1_DATA
+        in al, dx
+        mov dx, COM1_LSR
+        jmp .drain
+    .done:
     }
 }
 
@@ -565,6 +579,19 @@ func read_line(): string {
         jz .wait
         mov dx, COM1_DATA
         in al, dx
+        ; Skip non-printable characters (except CR/LF)
+        cmp al, 0x20
+        jb .check_ctrl
+        jmp .process
+    .check_ctrl:
+        cmp al, 0x0D
+        je .process
+        cmp al, 0x0A
+        je .process
+        cmp al, 0x08
+        je .process
+        jmp .loop        ; skip this character
+    .process:
         push rax
         mov dx, COM1_LSR
     .wait_echo:
@@ -578,6 +605,14 @@ func read_line(): string {
         je .done
         cmp al, 0x0A
         je .done
+        cmp al, 0x08
+        jne .store
+        ; Backspace - remove last character
+        cmp rcx, 0
+        je .loop
+        dec rcx
+        jmp .loop
+    .store:
         mov [rbx + rcx], al
         inc rcx
         cmp rcx, 255
@@ -667,7 +702,9 @@ func shell_main() {
     while true {
         serial_puts("Aether> ")
         let cmd = read_line()
-        exec_cmd(cmd)
+        if cmd != 0 {
+            exec_cmd(cmd)
+        }
     }
 }
 
