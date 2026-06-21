@@ -13,10 +13,14 @@
 - [x] Kernel rewritten in Aether (main.ae) instead of C 🟢
 - [x] OS Makefile uses `aether --target kernel` instead of gcc/clang 🟢
 
-## Phase 2 — Execution 🔴 NOT STARTED
-- [ ] Binary exec (ELF load at 0x2000000, call entry)
+## Phase 2 — Execution 🔵 IN PROGRESS
+- [x] Boot chain copy size fixed (52 sectors, matches actual kernel size)
+- [x] `--target binary` compiler target fixed (proper linker script, ret-to-shell)
+- [x] Standalone binary compilation pipeline (Makefile + embed_binaries.py)
+- [x] Standalone commands: help, ls, echo, reboot (compiled as --target binary)
+- [x] libaether.ae: userspace runtime library (syscall wrappers)
+- [ ] Binary loading from disk (ATA PIO disk read in kernel)
 - [ ] Module verification (ABI checks, capability grants)
-- [ ] Standalone commands (ls, cat, echo, shutdown, reboot)
 - [ ] PATH configurable from env variable
 - [ ] Pipe/redirect support
 
@@ -93,3 +97,5 @@
 - **No floating point in kernel**: `-mno-sse -mno-mmx -mno-80387`
 - **No libc**: `-nostdlib -ffreestanding`
 - **No red zone**: `-mno-red-zone`
+- **Standalone binaries**: compiled with `aether --target binary`, linked at 0x2000000, use `ret` to return to shell
+- **Binary embedding**: ELF binaries are embedded in the kernel's data section via embed_binaries.py
