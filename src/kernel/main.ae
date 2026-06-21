@@ -110,11 +110,13 @@ func serial_puts(s: string) {
         lodsb
         test al, al
         jz .done
+        mov ah, al          ; save char in ah
         mov dx, COM1_LSR
     .wait:
         in al, dx
         test al, LSR_THR_EMPTY
         jz .wait
+        mov al, ah          ; restore char
         mov dx, COM1_DATA
         out dx, al
         jmp .loop

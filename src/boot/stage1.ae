@@ -1,0 +1,89 @@
+# Aether OS — Stage 1 MBR Boot Sector
+# Loads stage2 from disk via INT 13h extensions (LBA), jumps to 0x7E00
+# Compiled with: aether --target boot
+
+@layout(start=0x7C00, max=512, bits=16, signature=0xAA55)
+func stage1() {
+    asm {
+start:
+        ; Set up segments and stack
+        xor ax, ax
+        mov ds, ax
+        mov es, ax
+        mov ss, ax
+        mov sp, 0x7C00
+
+        ; Save boot drive number (passed in dl by BIOS)
+        mov [boot_drive], dl
+
+        ; Print boot message
+        mov si, msg_booting
+        call print_string
+
+        ; Check for INT 13h extensions (LBA)
+        mov ah, 0x41
+        mov bx, 0x55AA
+        int 0x13
+        jc use_chs
+
+        ; Use LBA (INT 13h extensions)
+        ; DAP (Disk Address Packet) at 0x600
+        mov si, dap
+        mov ah, 0x42        ; extended read
+        mov dl, [boot_drive]
+        int 0x13
+        jc disk_error
+        jmp load_success
+
+use_chs:
+        ; Fallback to CHS
+        mov ah, 0x02        ; read sectors
+        mov al, 0x20        ; read 32 sectors (16KB for stage2)
+        mov ch, 0           ; cylinder 0
+        mov cl, 2           ; start at sector 2 (sector 1 is this MBR)
+        mov dh, 0           ; head 0
+        mov dl, [boot_drive]
+        mov bx, 0x7E00      ; load to 0x7E00
+        int 0x13
+        jc disk_error
+
+load_success:
+        ; Jump to stage2
+        jmp 0x0000:0x7E00
+
+disk_error:
+        mov si, msg_error
+        call print_string
+        mov ah, 0
+        int 0x16            ; wait for keypress
+        int 0x19            ; reboot
+
+; Print null-terminated string in DS:SI
+print_string:
+        push ax
+        mov ah, 0x0E        ; BIOS teletype output
+    .loop:
+        lodsb
+        or al, al
+        jz .done
+        int 0x10
+        jmp .loop
+    .done:
+        pop ax
+        ret
+
+; Data
+align 4
+dap:
+        db 0x10             ; size of DAP (16 bytes)
+        db 0                ; reserved
+        dw 0x20             ; number of sectors to read (32)
+        dw 0x7E00           ; buffer offset
+        dw 0                ; buffer segment
+        dq 1                ; start LBA (sector 1, after MBR)
+
+boot_drive: db 0
+msg_booting: db "Aether OS: Loading...", 0x0D, 0x0A, 0
+msg_error:   db "Disk error! Press any key to reboot.", 0x0D, 0x0A, 0
+    }
+}
