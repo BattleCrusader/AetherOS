@@ -85,7 +85,7 @@ func serial_init() {
         mov al, 0x03
         out dx, al
         mov dx, COM1_MCR
-        mov al, 0x0B
+        mov al, 0x03        ; DTR + RTS, NO loopback
         out dx, al
     }
 }
@@ -232,6 +232,7 @@ func alloc_page(): u64 {
         mov rax, rcx
         shl rax, 12
         add rax, MEM_START
+        ret
     }
     return 0
 }
@@ -289,6 +290,7 @@ func elf_check_header(addr: u64): u64 {
 func elf_get_entry(addr: u64): u64 {
     asm {
         mov rax, [rdi + 24]
+        ret
     }
     return 0
 }
@@ -297,6 +299,7 @@ func elf_get_entry(addr: u64): u64 {
 func elf_get_phoff(addr: u64): u64 {
     asm {
         mov rax, [rdi + 32]
+        ret
     }
     return 0
 }
@@ -305,6 +308,7 @@ func elf_get_phoff(addr: u64): u64 {
 func elf_get_phnum(addr: u64): u64 {
     asm {
         mov ax, [rdi + 56]
+        ret
     }
     return 0
 }
@@ -313,6 +317,7 @@ func elf_get_phnum(addr: u64): u64 {
 func elf_get_phentsize(addr: u64): u64 {
     asm {
         mov ax, [rdi + 54]
+        ret
     }
     return 0
 }
@@ -396,6 +401,7 @@ func elf_load_segments(src: u64, dest: u64): u64 {
         pop r13
         pop r12
         pop rbx
+        ret
     }
     return 0
 }
@@ -460,6 +466,7 @@ func exec_binary(path: string): u64 {
     .out:
         pop r12
         pop rbx
+        ret
     }
     return 1
 }
@@ -537,6 +544,7 @@ func strcmp(s1: string, s2: string): u64 {
         ret
     .same:
         xor rax, rax
+        ret
     }
     return 1
 }
@@ -577,6 +585,7 @@ func read_line(): string {
     .done:
         mov byte [rbx + rcx], 0
         mov rax, rbx
+        ret
     }
     return 0
 }
@@ -634,7 +643,24 @@ func serial_newline() {
     }
 }
 
+# serial_flush() — drain any pending input data
+func serial_flush() {
+    asm {
+        mov dx, COM1_LSR
+    .loop:
+        in al, dx
+        test al, 1
+        jz .done
+        mov dx, COM1_DATA
+        in al, dx
+        mov dx, COM1_LSR
+        jmp .loop
+    .done:
+    }
+}
+
 func shell_main() {
+    serial_flush()
     serial_puts("\r\nAether OS Shell v0.1\r\n")
     serial_puts("Type 'help' for available commands.\r\n")
 
