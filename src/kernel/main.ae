@@ -182,7 +182,7 @@ func serial_putdec(val: u64) {
         mov dx, COM1_DATA
         mov al, '0'
         out dx, al
-        ret
+        leave; ret
     .convert:
         mov rcx, 0
         mov rbx, 10
@@ -236,7 +236,7 @@ func alloc_page(): u64 {
         cmp rcx, 59000
         jb .loop
         xor rax, rax
-        ret
+        leave; ret
     .found:
         mov rax, rcx
         shr rax, 3
@@ -246,7 +246,7 @@ func alloc_page(): u64 {
         mov rax, rcx
         shl rax, 12
         add rax, MEM_START
-        ret
+        leave; ret
     }
     return 0
 }
@@ -293,7 +293,7 @@ func elf_check_header(addr: u64): u64 {
         cmp ax, 62
         jne .fail
         mov rax, 1
-        ret
+        leave; ret
     .fail:
         xor rax, rax
     }
@@ -304,7 +304,7 @@ func elf_check_header(addr: u64): u64 {
 func elf_get_entry(addr: u64): u64 {
     asm {
         mov rax, [rdi + 24]
-        ret
+        leave; ret
     }
     return 0
 }
@@ -313,7 +313,7 @@ func elf_get_entry(addr: u64): u64 {
 func elf_get_phoff(addr: u64): u64 {
     asm {
         mov rax, [rdi + 32]
-        ret
+        leave; ret
     }
     return 0
 }
@@ -322,7 +322,7 @@ func elf_get_phoff(addr: u64): u64 {
 func elf_get_phnum(addr: u64): u64 {
     asm {
         mov ax, [rdi + 56]
-        ret
+        leave; ret
     }
     return 0
 }
@@ -331,7 +331,7 @@ func elf_get_phnum(addr: u64): u64 {
 func elf_get_phentsize(addr: u64): u64 {
     asm {
         mov ax, [rdi + 54]
-        ret
+        leave; ret
     }
     return 0
 }
@@ -415,7 +415,7 @@ func elf_load_segments(src: u64, dest: u64): u64 {
         pop r13
         pop r12
         pop rbx
-        ret
+        leave; ret
     }
     return 0
 }
@@ -480,7 +480,7 @@ func exec_binary(path: string): u64 {
     .out:
         pop r12
         pop rbx
-        ret
+        leave; ret
     }
     return 1
 }
@@ -555,10 +555,10 @@ func strcmp(s1: string, s2: string): u64 {
     .diff:
         xor rax, rax
         inc rax
-        ret
+        leave; ret
     .same:
         xor rax, rax
-        ret
+        leave; ret
     }
     return 1
 }
@@ -620,7 +620,7 @@ func read_line(): string {
     .done:
         mov byte [rbx + rcx], 0
         mov rax, rbx
-        ret
+        leave; ret
     }
     return 0
 }
@@ -998,11 +998,11 @@ func fs_open(path: string): u64 {
         jmp .loop
     .found_root:
         mov rax, INODE_ROOT
-        ret
+        leave; ret
     .found:
         mov rax, rcx
         inc rax
-        ret
+        leave; ret
     .not_found:
         xor rax, rax
     }
