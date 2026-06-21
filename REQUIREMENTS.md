@@ -11,12 +11,13 @@ Aether is a from-scratch x86_64 operating system built for the long haul. Every 
 - **Every command is a standalone binary.** Shell builtins do not exist. `ls`, `cat`, `echo`, `reboot`, `qubit` — all ELF executables in `/bin/`, resolved via `PATH`, loaded into a scratch exec space at 0x2000000, run, and discarded.
 - **Failures are contained.** A crashed binary returns to the shell. A crashed module doesn't take the kernel with it. Corrupted memory is detected and isolated.
 - **The system improves from use.** Procedures are saved as skills. Memory accumulates across sessions. Boot configuration is text files.
-- **Language: C (C11, freestanding).** No stdlib, no libc. The kernel is compiled with `gcc -ffreestanding -nostdlib -mno-red-zone`. See section 10 for build details. Module interface uses flat u64/u32/[u8*+len] convention for stable ABI.
+- **Language: Aether** No stdlib, no libc. The kernel is compiled with `gcc -ffreestanding -nostdlib -mno-red-zone`. See section 10 for build details. Module interface uses flat u64/u32/[u8*+len] convention for stable ABI.
 - **Full testability** Full test suite to cover everything that's being built
 - **Full documentation** Document everything that's being built in obsidian
 - **Full status capturing** Fully capture the status of the project in STATUS.md
 - **Reread of REQUIREMENTS.md** Before every new item that's being built, synchronize STATUS.md with REQUIREMENTS.md. NEVER UPDATE **REQUIREMENTS.md** without prior consent
 - **Source location** Only make changes in **/Volumes/Backup/Development/Project_Aether**. Nothing maybe be removed without prior consent, and **ONLY** make changes in **/Volumes/Backup/Development/Project_Aether** and it's subdirectories
+- **Universal Binaries** All binaries should be built as full universal binaries so that the OS can run binaries on any supported architecture without rebuilding executables
 
 ---
 
