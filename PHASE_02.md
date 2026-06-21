@@ -15,6 +15,12 @@ Phase 2 enables standalone ELF binaries in `/bin/`, module loading from `/lib/en
 - [x] **Shell prompt fix**: removed redundant `return 0` from asm-block functions
 - [x] **Compiler fix**: suppress default return when asm block contains `ret`
 - [x] **Triple fault fix**: added `cli` before kernel call in boot.ae — hardware timer IRQ0 was firing while polling serial, causing GPF → double fault → triple fault with no IDT 🟢
+- [x] **serial_newline() fixed**: was passing args in `al` instead of `dil` (SysV ABI) — caused garbage `??` output 🟢
+- [x] **Backspace fix**: handles both 0x08 (BS) and 0x7F (DEL), sends ANSI erase sequence ESC[D space ESC[D 🟢
+- [x] **exec_cmd first-word extraction**: extracts command name from input before lookup — "echo hello world" now matches "echo" 🟢
+- [x] **Inline command handlers**: help, ls, echo, reboot, shutdown, clear, mem registered directly in kernel 🟢
+- [x] **Shutdown command**: tries ACPI PM1a, QEMU-specific, and Bochs BDA methods 🟢
+- [x] **Debug scaffolding cleaned up**: removed kernel_c.c, entry_trampoline.asm, minimal_kernel.asm, minimal2.asm, minimal3.asm 🟢
 - [x] **Shell now boots, shows prompt, and waits for input** 🟢
 - [x] **Shell accepts commands and loops correctly** 🟢
 - [ ] Create `/bin/shutdown.ae` — standalone shutdown command
