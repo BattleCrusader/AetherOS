@@ -2,7 +2,7 @@
 # Loads stage2 from disk via INT 13h extensions (LBA), jumps to 0x7E00
 # Compiled with: aether --target boot
 
-@layout(start=0x7C00, max=512, bits=16)
+@layout(start=0x7C00, max=512, bits=16, signature=0xAA55)
 func stage1() {
     asm {
 start:
@@ -85,8 +85,5 @@ dap:
 boot_drive: db 0
 msg_booting: db "Aether OS: Loading...", 0x0D, 0x0A, 0
 msg_error:   db "Disk error! Press any key to reboot.", 0x0D, 0x0A, 0
-
-; Boot signature — must be last 2 bytes
-dw 0xAA55
     }
 }

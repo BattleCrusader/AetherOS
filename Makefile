@@ -44,7 +44,7 @@ $(BOOT_BIN): $(SRC_BOOT)/boot.ae
 
 # Kernel — compiled from Aether source
 $(KERNEL_ELF): $(KERNEL_AE)
-	$(AETHER) --target kernel $(KERNEL_AE) -o $@
+	$(AETHER) --target kernel -L tools/kernel.ld $(KERNEL_AE) -o $@
 
 # Convert kernel ELF to flat binary
 $(KERNEL_BIN): $(KERNEL_ELF)

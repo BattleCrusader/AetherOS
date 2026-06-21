@@ -98,9 +98,9 @@ long_mode_entry:
         mov al, '>'
         out dx, al
 
-        ; Clear BSS (0x1006390, size 0x1ac1 bytes)
-        mov rdi, 0x1006390
-        mov rcx, 0x1ac1
+        ; Clear BSS (from __bss_start to __bss_end)
+        mov rdi, 0x1004ba0
+        mov rcx, 0x590
         xor al, al
         rep stosb
 

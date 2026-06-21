@@ -28,8 +28,8 @@ start:
         call print_string
 
         ; Set up DAP for INT 13h extended read
-        ; Read 49 sectors starting at LBA 34 to buffer 0x6000:0x0000
-        mov word [dap.sectors], 49
+        ; Read 38 sectors starting at LBA 34 to buffer 0x6000:0x0000
+        mov word [dap.sectors], 38
         mov word [dap.offset], 0x0000
         mov word [dap.segment], 0x6000
         mov dword [dap.lba], 34
@@ -83,10 +83,10 @@ pmode_entry:
         out dx, al
 
         ; Copy kernel from 0x60000 to 0x1000000
-        ; Source: 0x60000, Dest: 0x1000000, Size: 49 sectors = 25088 bytes
+        ; Source: 0x60000, Dest: 0x1000000, Size: 38 sectors = 19456 bytes
         mov esi, 0x60000
         mov edi, 0x1000000
-        mov ecx, 6272       ; 25088 bytes / 4 = 6272 dwords
+        mov ecx, 4864       ; 19456 bytes / 4 = 4864 dwords
         cld
         rep movsd
 
