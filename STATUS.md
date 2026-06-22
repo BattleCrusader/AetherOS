@@ -18,7 +18,10 @@
 - [x] `--target binary` compiler target fixed (proper linker script, ret-to-shell)
 - [x] Standalone binary compilation pipeline (Makefile + embed_binaries.py)
 - [x] Standalone commands: help, ls, echo, reboot (compiled as --target binary)
-- [x] libaether.ae: userspace runtime library (syscall wrappers)
+- [x] libaether.ae: userspace runtime library (syscall wrappers) — moved to src/lib/
+- [x] libaether.ae: syscall wrappers use `sys func` declarations (no raw asm blocks)
+- [x] libaether.ae: println uses string interpolation, newline() and exit_bin() removed
+- [x] All 15 binaries cleaned up: import ../lib/libaether.ae, no duplicated asm blocks
 - [x] **Shell prompt fix**: removed redundant `return 0` from asm-block functions
 - [x] **Compiler fix**: suppress default return when asm block contains `ret`
 - [x] **Triple fault fix**: added `cli` before kernel call in boot.ae — hardware timer IRQ0 was firing while polling serial, causing GPF → double fault → triple fault with no IDT 🟢
