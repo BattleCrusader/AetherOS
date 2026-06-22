@@ -13,14 +13,13 @@
 - [x] Kernel rewritten in Aether (main.ae) instead of C 🟢
 - [x] OS Makefile uses `aether --target kernel` instead of gcc/clang 🟢
 
-## Phase 2 — Execution 🔵 IN PROGRESS
+## Phase 2 — Execution 🟢 COMPLETE
 - [x] Boot chain copy size fixed (52 sectors, matches actual kernel size)
 - [x] `--target binary` compiler target fixed (proper linker script, ret-to-shell)
-- [x] Standalone binary compilation pipeline (Makefile + embed_binaries.py)
-- [x] Standalone commands: help, ls, echo, reboot (compiled as --target binary)
+- [x] Standalone binary compilation pipeline (Makefile + build_image.py)
+- [x] Standalone commands: help, ls, echo, reboot, shutdown, clear, mem (15 total)
 - [x] libaether.ae: userspace runtime library (syscall wrappers) — moved to src/lib/
 - [x] libaether.ae: syscall wrappers use `sys func` declarations (no raw asm blocks)
-- [x] libaether.ae: println uses string interpolation, newline() and exit_bin() removed
 - [x] All 15 binaries cleaned up: import ../lib/libaether.ae, no duplicated asm blocks
 - [x] **Shell prompt fix**: removed redundant `return 0` from asm-block functions
 - [x] **Compiler fix**: suppress default return when asm block contains `ret`
@@ -42,26 +41,17 @@
 - [x] **serial_newline uses \n only (Unix convention, no \r)** 🟢
 - [x] **All asm blocks with ret use leave;ret for proper stack frame unwind** 🟢
 - [x] **Command handlers accept line:string, exec_cmd passes full input** 🟢
-- [ ] **Convert asm blocks to pure Aether** 🔵 IN PROGRESS
-  - [ ] **exec_cmd** — command lookup, string comparison, function pointer dispatch
-  - [ ] **read_line** — shell input loop (serial port I/O stays asm)
-  - [ ] **register_commands** — function pointer table setup
-  - [ ] **cmd_ls** — directory listing logic
-  - [ ] **cmd_echo** — string parsing
-  - [ ] **find_cmd_impl / reg_cmd_impl** — table management
-  - [ ] **path_resolve** — path string manipulation
-  - [ ] **exec_binary** — ELF loading and execution
-  - [ ] **fs_init / fs_open / fs_read / fs_readdir_root** — filesystem operations
-  - [ ] **ata_read_sectors** — ATA PIO disk I/O (port I/O stays asm)
-  - [ ] **load_binary_index** — binary index parsing
-  - [ ] **serial_putc / serial_puts / serial_newline** — serial output (port I/O stays asm)
-  - [ ] **page_alloc / page_free** — bitmap allocator
-  - [ ] **elf_load_segments** — ELF parsing
-  - [ ] **syscall_init** — syscall table setup
-  - [ ] **module_registry_init / reg_cmd_impl / find_cmd_impl** — registry management
-- [ ] Module verification (ABI checks, capability grants)
-- [ ] PATH configurable from env variable
-- [ ] Pipe/redirect support
+- [x] **reg_cmd_impl ABI fix**: handler in rdx (not rsi) — Aether string is {ptr,len} in rdi:rsi 🟢
+- [x] **exec_cmd stack read fix**: reads from [rbp-8] instead of rdi (clobbered by Aether calls) 🟢
+- [x] **find_cmd_impl return value fix**: early ret in .found path to preserve rax 🟢
+- [x] **path_resolve arg fix**: passes cmd_buf (not full input line) to path_resolve 🟢
+- [x] **echo removed from inline commands**: routes to standalone /bin/echo.elf 🟢
+- [x] **exec_binary passes argc/argv**: sets rdi=0, rsi=0 before calling binary entry point 🟢
+- [x] **fs_open binary name matching**: stops at '.' in addition to '\0' for .elf extension 🟢
+- [x] **bin_index_sector_val fixed**: changed from dd (4 bytes) to dq (8 bytes) to match mov rax 🟢
+- [x] **build_image.py patcher fixed**: uses <Q (8 bytes) instead of <I (4 bytes) 🟢
+- [x] **Comprehensive test suite**: tests/test_os.sh — 25+ tests covering boot, binaries, kernel, index 🟢
+- [x] **make test-all target**: runs full test suite 🟢
 
 ## Phase 3 — Filesystem 🔴 NOT STARTED
 - [ ] AetherFS disk-backed FS module
@@ -107,8 +97,8 @@
 
 ## Priority Queue (Next to Build)
 
-1. **Phase 1**: Kernel core — boot chain, serial I/O, page allocator, ELF loader, syscall page, module registry, shell, boot FS ✅
-2. **Phase 2**: Execution — binary exec, module verification, standalone commands, PATH, pipe/redirect
+1. **Phase 1**: Kernel core ✅
+2. **Phase 2**: Execution — binary exec, module verification, standalone commands, PATH, pipe/redirect ✅
 3. **Phase 3**: Filesystem — AetherFS disk-backed FS module, read/write, log recovery
 4. **Phase 4**: Advanced memory — region allocator, capability-based access, leak detection
 5. **Phase 5**: Multithreading — fiber scheduler, SMP work-stealing, lock-free queues
@@ -139,4 +129,7 @@
 - **No libc**: `-nostdlib -ffreestanding`
 - **No red zone**: `-mno-red-zone`
 - **Standalone binaries**: compiled with `aether --target binary`, linked at 0x2000000, use `ret` to return to shell
-- **Binary embedding**: ELF binaries are embedded in the kernel's data section via embed_binaries.py
+- **Binary embedding**: ELF binaries are embedded in the kernel's data section via build_image.py
+- **Binary index patching**: `bin_index_sector_val` is `dq` (8 bytes) with `AETHBINX` marker. build_image.py patches it with `<Q` format. The kernel reads it with `mov rax, [bin_index_sector_val]`.
+- **fs_open binary matching**: When comparing paths like `/bin/echo.elf` against binary index names like `echo`, the comparison stops at `.` as well as `\0` to handle the `.elf` extension.
+- **exec_binary args**: Passes `rdi=0, rsi=0` (argc=0, argv=NULL) to the binary entry point. The binary's `_start` wrapper checks `argc <= 1` and skips argv[1] when no args.

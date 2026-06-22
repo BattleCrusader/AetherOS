@@ -76,12 +76,12 @@ def main():
     index_start_sector = kernel_start_sector + kernel_sectors
 
     # Patch the kernel binary with the index sector number
-    # Search for "AETHBINX" marker followed by 4 bytes to patch
+    # Search for "AETHBINX" marker followed by 8 bytes to patch (dq)
     marker = b'AETHBINX'
     patch_offset = kernel.find(marker)
     if patch_offset >= 0:
         patched = bytearray(kernel)
-        struct.pack_into('<I', patched, patch_offset + 8, index_start_sector)
+        struct.pack_into('<Q', patched, patch_offset + 8, index_start_sector)
         kernel = bytes(patched)
         print(f"  Patched bin_index_sector_val at offset {patch_offset} -> {index_start_sector}")
     else:

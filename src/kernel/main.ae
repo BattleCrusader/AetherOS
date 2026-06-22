@@ -101,7 +101,7 @@ hex_chars:    db "0123456789ABCDEF", 0
 ; Unique 12-byte marker: "AETHBINX" + u32 sector number
 ; Build script searches for "AETHBINX" and writes the sector after it
 bin_index_marker: db "AETHBINX"
-bin_index_sector_val: dd 0xFFFFFFFF
+bin_index_sector_val: dq 0xFFFFFFFFFFFFFFFF
 }
 
 # ============================================================
@@ -473,6 +473,9 @@ func exec_binary(path: string): u64 {
         jz .error
 
         ; Entry point is returned in rax from elf_load_segments
+        ; Set up argc/argv for the binary (SysV ABI: rdi=argc, rsi=argv)
+        xor rdi, rdi        ; argc = 0 (no args)
+        xor rsi, rsi        ; argv = NULL
         call rax
 
         xor rax, rax
@@ -1806,6 +1809,8 @@ func fs_open(path: string): u64 {
         jne .bin_next
         test al, al
         jz .bin_found
+        cmp al, '.'
+        je .bin_found
         inc r8
         inc r9
         jmp .bin_cmp

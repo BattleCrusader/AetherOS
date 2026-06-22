@@ -107,3 +107,7 @@ test: $(DISK_IMG)
 	@sleep 3
 	@pkill -f "qemu-system-x86_64.*aether" 2>/dev/null || true
 	@grep -q "Aether OS" /tmp/aether_test.log 2>/dev/null && echo "PASS: Boot output detected" || echo "FAIL: No boot output"
+
+# Comprehensive test suite
+test-all: $(DISK_IMG)
+	@bash tests/test_os.sh
