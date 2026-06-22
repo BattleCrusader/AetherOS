@@ -1,45 +1,11 @@
 # Aether OS — ps command
 # Standalone binary: lists running processes
 
-func puts(s: string) {
-    asm {
-        mov rax, 0x5008
-        call rax
-    }
-}
-
-func putc(c: u8) {
-    asm {
-        mov rax, 0x5000
-        call rax
-    }
-}
-
-func exit_bin() {
-    asm {
-        mov rax, 0x5038
-        call rax
-    }
-}
-
-func newline() {
-    asm {
-        mov al, 0x0D
-        mov dx, 0x3F8
-        out dx, al
-        mov al, 0x0A
-        mov dx, 0x3F8
-        out dx, al
-    }
-}
+import "../lib/libaether.ae"
 
 func main(): u64 {
-    puts("PID  NAME")
-    newline()
-    puts("  1  kernel")
-    newline()
-    puts("  2  shell")
-    newline()
-    exit_bin()
+    puts("PID  NAME\n")
+    puts("  1  kernel\n")
+    puts("  2  shell\n")
     return 0
 }

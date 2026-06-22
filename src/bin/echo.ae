@@ -1,11 +1,9 @@
 # Aether OS — echo command
 # Standalone binary: echoes text to serial
 
-import "libaether.ae"
+import "../lib/libaether.ae"
 
 func main(): u64 {
-    puts("echo: Hello from Aether OS!")
-    newline()
-    exit_bin()
+    puts("echo: Hello from Aether OS!\n")
     return 0
 }
