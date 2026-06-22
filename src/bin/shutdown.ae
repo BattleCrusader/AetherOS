@@ -1,9 +1,8 @@
 # Aether OS — shutdown command
-# Standalone binary: shuts down the system
-
+# Standalone binary
 import "../lib/libaether.ae"
 
 func main(): u64 {
-    puts("Shutting down...\n")
+    puts("hello from shutdown\n")
     return 0
 }

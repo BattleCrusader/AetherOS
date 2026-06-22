@@ -1,19 +1,8 @@
 # Aether OS — reboot command
-# Standalone binary: reboots the system via keyboard controller
-
+# Standalone binary
 import "../lib/libaether.ae"
 
 func main(): u64 {
-    puts("Rebooting...\n")
-    asm {
-        mov al, 0xFE
-        out 0x64, al
-    }
-    asm {
-        cli
-    .loop:
-        hlt
-        jmp .loop
-    }
+    puts("hello from reboot\n")
     return 0
 }

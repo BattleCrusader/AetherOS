@@ -1,30 +1,8 @@
 # Aether OS — booleval command
-# Standalone binary: evaluates a boolean value (non-zero = true)
-
+# Standalone binary
 import "../lib/libaether.ae"
 
 func main(): u64 {
-    # Check if argument (passed in rdi) is non-zero
-    asm {
-        mov rax, rdi
-        test rax, rax
-        jnz .true
-        mov rdi, .false_str
-        mov rax, 0x5008
-        call rax
-        jmp .done
-    .true:
-        mov rdi, .true_str
-        mov rax, 0x5008
-        call rax
-    .done:
-        jmp .end
-    .true_str:
-        db "true", 0
-    .false_str:
-        db "false", 0
-    .end:
-    }
-    puts("\n")
+    puts("hello from booleval\n")
     return 0
 }

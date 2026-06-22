@@ -24,13 +24,13 @@
 - [x] All 15 binaries cleaned up: import ../lib/libaether.ae, no duplicated asm blocks
 - [x] **Shell prompt fix**: removed redundant `return 0` from asm-block functions
 - [x] **Compiler fix**: suppress default return when asm block contains `ret`
-- [x] **Triple fault fix**: added `cli` before kernel call in boot.ae — hardware timer IRQ0 was firing while polling serial, causing GPF → double fault → triple fault with no IDT 🟢
-- [x] **serial_newline() fixed**: was passing args in `al` instead of `dil` (SysV ABI) — caused garbage `??` output 🟢
-- [x] **Backspace fix**: handles both 0x08 (BS) and 0x7F (DEL), sends ANSI erase sequence ESC[D space ESC[D 🟢
-- [x] **exec_cmd first-word extraction**: extracts command name from input before lookup — "echo hello world" now matches "echo" 🟢
-- [x] **Inline command handlers**: help, ls, echo, reboot, shutdown, clear, mem registered directly in kernel 🟢
+- [x] **Triple fault fix**: added `cli` before kernel call in boot.ae 🟢
+- [x] **serial_newline() fixed**: was passing args in `al` instead of `dil` 🟢
+- [x] **Backspace fix**: handles both 0x08 (BS) and 0x7F (DEL) 🟢
+- [x] **exec_cmd first-word extraction**: extracts command name from input before lookup 🟢
+- [x] **Inline command handlers**: help, ls, echo, reboot, shutdown, clear, mem registered 🟢
 - [x] **Shutdown command**: tries ACPI PM1a, QEMU-specific, and Bochs BDA methods 🟢
-- [x] **Debug scaffolding cleaned up**: removed kernel_c.c, entry_trampoline.asm, minimal_kernel.asm, minimal2.asm, minimal3.asm 🟢
+- [x] **Debug scaffolding cleaned up** 🟢
 - [x] **Shell now boots, shows prompt, blocks at read_line, and responds to input** 🟢
 - [x] **Binary loading from disk (ATA PIO disk read in kernel)** 🟢
 - [x] **Binary index loading from disk** 🟢
@@ -42,6 +42,23 @@
 - [x] **serial_newline uses \n only (Unix convention, no \r)** 🟢
 - [x] **All asm blocks with ret use leave;ret for proper stack frame unwind** 🟢
 - [x] **Command handlers accept line:string, exec_cmd passes full input** 🟢
+- [ ] **Convert asm blocks to pure Aether** 🔵 IN PROGRESS
+  - [ ] **exec_cmd** — command lookup, string comparison, function pointer dispatch
+  - [ ] **read_line** — shell input loop (serial port I/O stays asm)
+  - [ ] **register_commands** — function pointer table setup
+  - [ ] **cmd_ls** — directory listing logic
+  - [ ] **cmd_echo** — string parsing
+  - [ ] **find_cmd_impl / reg_cmd_impl** — table management
+  - [ ] **path_resolve** — path string manipulation
+  - [ ] **exec_binary** — ELF loading and execution
+  - [ ] **fs_init / fs_open / fs_read / fs_readdir_root** — filesystem operations
+  - [ ] **ata_read_sectors** — ATA PIO disk I/O (port I/O stays asm)
+  - [ ] **load_binary_index** — binary index parsing
+  - [ ] **serial_putc / serial_puts / serial_newline** — serial output (port I/O stays asm)
+  - [ ] **page_alloc / page_free** — bitmap allocator
+  - [ ] **elf_load_segments** — ELF parsing
+  - [ ] **syscall_init** — syscall table setup
+  - [ ] **module_registry_init / reg_cmd_impl / find_cmd_impl** — registry management
 - [ ] Module verification (ABI checks, capability grants)
 - [ ] PATH configurable from env variable
 - [ ] Pipe/redirect support

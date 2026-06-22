@@ -1,9 +1,8 @@
 # Aether OS — ver command
-# Standalone binary: shows version information
-
+# Standalone binary
 import "../lib/libaether.ae"
 
 func main(): u64 {
-    puts("Aether OS v0.1\n")
+    puts("hello from ver\n")
     return 0
 }

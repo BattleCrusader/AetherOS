@@ -1,9 +1,8 @@
 # Aether OS — cat command
-# Standalone binary: displays file contents
-
+# Standalone binary
 import "../lib/libaether.ae"
 
 func main(): u64 {
-    puts("cat: <filename>\n")
+    puts("hello from cat\n")
     return 0
 }
