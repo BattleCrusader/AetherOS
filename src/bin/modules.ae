@@ -1,9 +1,8 @@
 # Aether OS — modules command
-# Standalone binary: lists loaded kernel modules
-
+# Standalone binary
 import "../lib/libaether.ae"
 
 func main(): u64 {
-    puts("No modules loaded\n")
+    puts("hello from modules\n")
     return 0
 }

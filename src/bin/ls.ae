@@ -1,19 +1,8 @@
 # Aether OS — ls command
-# Standalone binary: lists directory contents via readdir syscall
-
+# Standalone binary
 import "../lib/libaether.ae"
 
-@entry(0x2000000)
 func main(): u64 {
-    asm {
-        mov al, 'X'
-        mov dx, 0x3F8
-        out dx, al
-        mov al, 0x0D
-        out dx, al
-        mov al, 0x0A
-        out dx, al
-    }
     puts("hello from ls\n")
     return 0
 }

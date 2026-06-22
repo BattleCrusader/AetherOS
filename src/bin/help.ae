@@ -1,24 +1,8 @@
 # Aether OS — help command
-# Standalone binary: lists available commands
-
+# Standalone binary
 import "../lib/libaether.ae"
 
 func main(): u64 {
-    puts("Available commands:\n")
-    puts("  help     - Show this help\n")
-    puts("  ls       - List directory contents\n")
-    puts("  echo     - Echo text\n")
-    puts("  reboot   - Reboot the system\n")
-    puts("  shutdown - Shutdown the system\n")
-    puts("  cat      - Display file contents\n")
-    puts("  clear    - Clear the screen\n")
-    puts("  uptime   - Show system uptime\n")
-    puts("  ps       - List processes\n")
-    puts("  modules  - List loaded modules\n")
-    puts("  mem      - Show memory info\n")
-    puts("  ver      - Show version info\n")
-    puts("  date     - Show date/time\n")
-    puts("  booleval - Evaluate a boolean expression\n")
-    puts("  qubit    - Quantum state simulation\n")
+    puts("hello from help\n")
     return 0
 }

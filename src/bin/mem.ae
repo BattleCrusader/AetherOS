@@ -1,10 +1,8 @@
 # Aether OS — mem command
-# Standalone binary: shows memory information
-
+# Standalone binary
 import "../lib/libaether.ae"
 
 func main(): u64 {
-    puts("Memory: 256MB total\n")
-    puts("Free: ~250MB\n")
+    puts("hello from mem\n")
     return 0
 }

@@ -800,31 +800,27 @@ func cmd_mem(line: string) {
 func register_commands() {
     asm {
         lea rdi, [rel help_str]
-        lea rsi, [rel cmd_help]
+        lea rdx, [rel cmd_help]
         call reg_cmd_impl
 
         lea rdi, [rel ls_str]
-        lea rsi, [rel cmd_ls]
-        call reg_cmd_impl
-
-        lea rdi, [rel echo_str]
-        lea rsi, [rel cmd_echo]
+        lea rdx, [rel cmd_ls]
         call reg_cmd_impl
 
         lea rdi, [rel reboot_str]
-        lea rsi, [rel cmd_reboot]
+        lea rdx, [rel cmd_reboot]
         call reg_cmd_impl
 
         lea rdi, [rel shutdown_str]
-        lea rsi, [rel cmd_shutdown]
+        lea rdx, [rel cmd_shutdown]
         call reg_cmd_impl
 
         lea rdi, [rel clear_str]
-        lea rsi, [rel cmd_clear]
+        lea rdx, [rel cmd_clear]
         call reg_cmd_impl
 
         lea rdi, [rel mem_str]
-        lea rsi, [rel cmd_mem]
+        lea rdx, [rel cmd_mem]
         call reg_cmd_impl
     }
 }
@@ -1111,6 +1107,10 @@ func read_line(): string {
         je .backspace
         cmp al, 0x7F
         je .backspace
+        cmp al, 0x0D
+        je .enter
+        cmp al, 0x0A
+        je .enter
         push rax
         mov dx, COM1_LSR
     .wait_echo:
@@ -1120,11 +1120,18 @@ func read_line(): string {
         mov dx, COM1_DATA
         pop rax
         out dx, al
-        cmp al, 0x0D
-        je .done
-        cmp al, 0x0A
-        je .done
         jmp .store
+    .enter:
+        ; Echo LF (0x0A) to move to next line
+        mov dx, COM1_LSR
+    .wait_lf:
+        in al, dx
+        test al, LSR_THR_EMPTY
+        jz .wait_lf
+        mov dx, COM1_DATA
+        mov al, 0x0A
+        out dx, al
+        jmp .done
     .backspace:
         cmp rcx, 0
         je .loop
@@ -1195,16 +1202,21 @@ func read_line(): string {
     .done:
         mov byte [rbx + rcx], 0
         mov rax, rbx
+        leave
+        ret
     }
 }
 
 func exec_cmd(cmd: string) {
+    serial_puts("exec: ")
+    serial_puts(cmd)
+    serial_newline()
     asm {
         push rbx
         push r12
         push r13
 
-        mov r12, rdi
+        mov r12, [rbp-8]
 
         ; Copy first word (command name) to cmd_buf
         lea r13, [rel cmd_buf]
@@ -1223,6 +1235,11 @@ func exec_cmd(cmd: string) {
     .end_name:
         mov byte [rdi], 0
 
+        ; Debug: print cmd_buf
+        lea rdi, [rel cmd_buf]
+        call serial_puts
+        call serial_newline
+
         ; If first char is '/', skip inline lookup and go straight to path
         mov al, [r13]
         cmp al, '/'
@@ -1239,7 +1256,7 @@ func exec_cmd(cmd: string) {
         jmp .done
 
     .try_path:
-        mov rdi, r12
+        mov rdi, r13
         call path_resolve
         test rax, rax
         jz .not_found
@@ -1386,7 +1403,7 @@ func reg_cmd_impl(name: string, handler: u64) {
         lea rbx, [rel cmd_names]
         mov [rbx + rcx*8], rdi
         lea rbx, [rel cmd_handlers]
-        mov [rbx + rcx*8], rsi
+        mov [rbx + rcx*8], rdx
         inc qword [rel cmd_count]
     .done:
     }
@@ -1432,6 +1449,11 @@ func find_cmd_impl(name: string): u64 {
     .found:
         lea rbx, [rel cmd_handlers]
         mov rax, [rbx + rcx*8]
+        ; Return directly — compiler adds xor rax,rax after asm blocks
+        ; so we must ret here to preserve the return value
+        mov rsp, rbp
+        pop rbp
+        ret
     .done:
     }
 }

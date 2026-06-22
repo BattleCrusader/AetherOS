@@ -1,9 +1,8 @@
 # Aether OS — qubit command
-# Standalone binary: displays quantum state simulation
-
+# Standalone binary
 import "../lib/libaether.ae"
 
 func main(): u64 {
-    puts("Qubit: |0> + |1> (superposition)\n")
+    puts("hello from qubit\n")
     return 0
 }

@@ -1,9 +1,8 @@
 # Aether OS — date command
-# Standalone binary: shows date and time
-
+# Standalone binary
 import "../lib/libaether.ae"
 
 func main(): u64 {
-    puts("Date: not available\n")
+    puts("hello from date\n")
     return 0
 }
