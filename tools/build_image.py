@@ -38,10 +38,6 @@ def main():
     # Pad stage2 to 16KB
     stage2 = stage2.ljust(16384, b'\x00')
 
-    # Pad kernel to next sector boundary
-    kernel_size = len(kernel)
-    kernel_padded = kernel.ljust(((kernel_size + 511) // 512) * 512, b'\x00')
-
     # Read binaries
     binaries = []
     bin_dir = args.bin_dir
@@ -60,11 +56,12 @@ def main():
     # Sector 33: unused (padding)
     # Sectors 34+: kernel
     kernel_start_sector = 34
-    kernel_sectors = len(kernel_padded) // 512
+    kernel_sectors = ((len(kernel) + 511) // 512)
     binary_start_sector = kernel_start_sector + kernel_sectors
 
     # Build binary index
     # Format: [count:u32] [start_sector:u32, size:u32, name:32bytes] x count
+    # Place index IMMEDIATELY after kernel so kernel_end_sector points to it
     index_data = struct.pack('<I', len(binaries))
     current_sector = binary_start_sector
     for name, data in binaries:
@@ -76,8 +73,23 @@ def main():
 
     # Pad index to sector boundary
     index_padded = index_data.ljust(((len(index_data) + 511) // 512) * 512, b'\x00')
-    index_start_sector = current_sector
-    current_sector += len(index_padded) // 512
+    index_start_sector = kernel_start_sector + kernel_sectors
+
+    # Patch the kernel binary with the index sector number
+    # Search for "AETHBINX" marker followed by 4 bytes to patch
+    marker = b'AETHBINX'
+    patch_offset = kernel.find(marker)
+    if patch_offset >= 0:
+        patched = bytearray(kernel)
+        struct.pack_into('<I', patched, patch_offset + 8, index_start_sector)
+        kernel = bytes(patched)
+        print(f"  Patched bin_index_sector_val at offset {patch_offset} -> {index_start_sector}")
+    else:
+        print(f"  WARNING: Could not find 'AETHBINX' marker in kernel binary")
+
+    # Pad kernel to next sector boundary
+    kernel_size = len(kernel)
+    kernel_padded = kernel.ljust(((kernel_size + 511) // 512) * 512, b'\x00')
 
     # Build disk image
     with open(args.output, 'wb') as f:
@@ -85,12 +97,12 @@ def main():
         f.write(stage2)           # sectors 1-32
         f.write(b'\x00' * 512)    # sector 33 (unused)
         f.write(kernel_padded)    # sectors 34+
-        # Write binaries
+        # Write binary index IMMEDIATELY after kernel
+        f.write(index_padded)
+        # Write binaries after index
         for name, data in binaries:
             data_padded = data.ljust(((len(data) + 511) // 512) * 512, b'\x00')
             f.write(data_padded)
-        # Write binary index
-        f.write(index_padded)
 
     # Print summary
     total_sectors = current_sector + len(index_padded) // 512

@@ -29,7 +29,16 @@
 - [x] **Shutdown command**: tries ACPI PM1a, QEMU-specific, and Bochs BDA methods 🟢
 - [x] **Debug scaffolding cleaned up**: removed kernel_c.c, entry_trampoline.asm, minimal_kernel.asm, minimal2.asm, minimal3.asm 🟢
 - [x] **Shell now boots, shows prompt, blocks at read_line, and responds to input** 🟢
-- [ ] Binary loading from disk (ATA PIO disk read in kernel)
+- [x] **Binary loading from disk (ATA PIO disk read in kernel)** 🟢
+- [x] **Binary index loading from disk** 🟢
+- [x] **fs_readdir_root lists inode table entries** 🟢
+- [x] **fs_read reads binary from disk via ATA PIO** 🟢
+- [x] **Inline echo command now echoes argument text** 🟢
+- [x] **Inline ls command lists root dir and /bin contents** 🟢
+- [x] **ls /bin lists all 15 standalone binaries** 🟢
+- [x] **serial_newline uses \n only (Unix convention, no \r)** 🟢
+- [x] **All asm blocks with ret use leave;ret for proper stack frame unwind** 🟢
+- [x] **Command handlers accept line:string, exec_cmd passes full input** 🟢
 - [ ] Module verification (ABI checks, capability grants)
 - [ ] PATH configurable from env variable
 - [ ] Pipe/redirect support

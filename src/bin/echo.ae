@@ -1,37 +1,7 @@
 # Aether OS — echo command
 # Standalone binary: echoes text to serial
 
-func putc(c: u8) {
-    asm {
-        mov rax, 0x5000
-        call rax
-    }
-}
-
-func puts(s: string) {
-    asm {
-        mov rax, 0x5008
-        call rax
-    }
-}
-
-func exit_bin() {
-    asm {
-        mov rax, 0x5038
-        call rax
-    }
-}
-
-func newline() {
-    asm {
-        mov al, 0x0D
-        mov dx, 0x3F8
-        out dx, al
-        mov al, 0x0A
-        mov dx, 0x3F8
-        out dx, al
-    }
-}
+import "libaether.ae"
 
 func main(): u64 {
     puts("echo: Hello from Aether OS!")
