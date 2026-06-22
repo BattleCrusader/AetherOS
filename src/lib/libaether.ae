@@ -1,0 +1,89 @@
+# Aether OS — LibAether (Userspace Runtime)
+# Thin wrappers around the syscall page at 0x5000
+# Included by all /bin/ binaries
+#
+# Uses `sys func` declarations — the compiler generates
+# the indirect call through the 0x5000 function table.
+# No raw asm blocks needed for syscall wrappers.
+
+# Syscall wrappers — each maps to a slot in the 0x5000 table
+sys func putc(c: u8) at(0)
+sys func puts(s: string) at(1)
+sys func open(path: string): u64 at(2)
+sys func read(ino: u64, buf: string, len: u64): u64 at(3)
+sys func readdir(ino: u64, buf: string, len: u64): u64 at(4)
+sys func getcwd(): u64 at(5)
+sys func chdir(ino: u64) at(6)
+sys func booleval(v: u64): u64 at(8)
+
+# Utility functions
+func print(s: string) {
+    puts(s)
+}
+
+func println(s: string) {
+    puts("{s}\n")
+}
+
+func print_hex(val: u64) {
+    asm {
+        push rbx
+        push r12
+        mov r12, rdi
+        mov rbx, 16
+    .loop:
+        sub rbx, 2
+        js .done
+        mov rax, r12
+        mov rcx, rbx
+        shr rax, cl
+        and al, 0x0F
+        cmp al, 10
+        jb .digit
+        add al, 'A' - 10
+        jmp .emit
+    .digit:
+        add al, '0'
+    .emit:
+        mov dx, 0x3F8
+        out dx, al
+        jmp .loop
+    .done:
+        pop r12
+        pop rbx
+    }
+}
+
+func print_dec(val: u64) {
+    asm {
+        push rbx
+        push r12
+        mov r12, rdi
+        mov rbx, 10
+        xor rcx, rcx
+        mov rdi, rsp
+        sub rsp, 24
+    .loop:
+        xor rdx, rdx
+        mov rax, r12
+        div rbx
+        mov r12, rax
+        add dl, '0'
+        dec rdi
+        mov [rdi], dl
+        inc rcx
+        test rax, rax
+        jnz .loop
+        mov rdx, rcx
+    .write:
+        mov al, [rdi]
+        mov dx, 0x3F8
+        out dx, al
+        inc rdi
+        dec rcx
+        jnz .write
+        add rsp, 24
+        pop r12
+        pop rbx
+    }
+}

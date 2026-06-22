@@ -1,19 +1,7 @@
 # Aether OS — clear command
 # Standalone binary: clears the screen via ANSI escape sequence
 
-func putc(c: u8) {
-    asm {
-        mov rax, 0x5000
-        call rax
-    }
-}
-
-func exit_bin() {
-    asm {
-        mov rax, 0x5038
-        call rax
-    }
-}
+import "../lib/libaether.ae"
 
 func main(): u64 {
     # ANSI clear screen and home cursor
@@ -34,6 +22,5 @@ func main(): u64 {
         mov al, 'H'
         out dx, al
     }
-    exit_bin()
     return 0
 }
