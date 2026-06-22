@@ -28,6 +28,7 @@ const PAGE_SIZE = 4096
 const MODULE_REGISTRY = 0x4000
 const SYSCALL_PAGE = 0x5000
 const BIN_BASE = 0x2000000
+const BIN_SCRATCH = 0x1E00000
 const MOD_SLOT_BASE = 0x2100000
 const MOD_SLOT_SIZE = 0x10000
 const MOD_SLOT_COUNT = 8
@@ -52,6 +53,7 @@ const ATA_ALT_STATUS = 0x3F6
 const KERNEL_LOAD_ADDR = 0x1000000
 const KERNEL_LINK_ADDR = 0x1004000
 const KERNEL_START_SECTOR = 34
+const BIN_INDEX_SECTOR = 80
 
 # ============================================================
 # Data section — top-level BSS and data declarations
@@ -73,6 +75,7 @@ kernel_end_sector: resq 1
 bin_index_count:   resq 1
 bin_index_entries: resq 64
 bin_index_names:   resb 1024
+ls_buf:            resb 256
     section .data
 root_name:    db "/", 0
 bin_name:     db "bin", 0
@@ -87,11 +90,18 @@ reboot_str:   db "reboot", 0
 shutdown_str: db "shutdown", 0
 clear_str:    db "clear", 0
 mem_str:      db "mem", 0
+aether_prompt: db "Aether> ", 0
+empty_str:    db "(empty)", 0
 help_text:    db 0x0D, 0x0A, "Available commands: help, ls, echo <text>, reboot", 0x0D, 0x0A, 0
 ls_result:    db 0x0D, 0x0A, "bin  etc  lib  tmp  dev", 0x0D, 0x0A, 0
-unknown_str:  db 0x0D, 0x0A, "Unknown command: ", 0
+unknown_str:  db 0x0A, "Unknown command: ", 0
 cmd_not_found: db 0x0D, 0x0A, "Command not found: ", 0
 hex_chars:    db "0123456789ABCDEF", 0
+; Binary index sector — patched by build_image.py
+; Unique 12-byte marker: "AETHBINX" + u32 sector number
+; Build script searches for "AETHBINX" and writes the sector after it
+bin_index_marker: db "AETHBINX"
+bin_index_sector_val: dd 0xFFFFFFFF
 }
 
 # ============================================================
@@ -168,9 +178,8 @@ func serial_puts(s: string) {
     }
 }
 
-# serial_newline is pure Aether — calls serial_putc twice
+# serial_newline — outputs \n only (Unix convention)
 func serial_newline() {
-    serial_putc(0x0D)
     serial_putc(0x0A)
 }
 
@@ -422,6 +431,8 @@ func elf_load_segments(src: u64, dest: u64): u64 {
         pop r13
         pop r12
         pop rbx
+        leave
+        ret
     }
 }
 
@@ -438,31 +449,30 @@ func exec_binary(path: string): u64 {
 
         mov rbx, rax
 
+        ; Read entire binary to scratch buffer
         mov rdi, rbx
-        mov rsi, BIN_BASE
-        mov rdx, 64
-        call fs_read
-        test rax, rax
-        jz .error
-
-        mov rdi, BIN_BASE
-        call elf_check_header
-        test rax, rax
-        jz .error
-
-        mov rdi, rbx
-        mov rsi, BIN_BASE
+        mov rsi, BIN_SCRATCH
         mov rdx, 0x10000
         call fs_read
         test rax, rax
         jz .error
 
-        mov rdi, BIN_BASE
-        mov rsi, BIN_BASE
+        ; Check ELF header in scratch buffer
+        mov rdi, BIN_SCRATCH
+        call elf_check_header
+        test rax, rax
+        jz .error
+
+        ; Load segments from scratch to BIN_BASE
+        ; elf_load_segments does: dest + p_vaddr
+        ; Binary is linked at 0x2000000, so pass dest=0 to get 0+0x2000000=BIN_BASE
+        mov rdi, BIN_SCRATCH
+        xor rsi, rsi
         call elf_load_segments
         test rax, rax
         jz .error
 
+        ; Entry point is returned in rax from elf_load_segments
         call rax
 
         xor rax, rax
@@ -473,6 +483,8 @@ func exec_binary(path: string): u64 {
     .out:
         pop r12
         pop rbx
+        leave
+        ret
     }
 }
 
@@ -483,6 +495,16 @@ func path_resolve(name: string): string {
 
         mov r12, rdi
 
+        ; Check if path already starts with '/'
+        mov al, [r12]
+        cmp al, '/'
+        jne .prepend_bin
+
+        ; Absolute path — use as-is
+        mov rax, r12
+        jmp .out
+
+    .prepend_bin:
         lea rbx, [rel path_buf]
         mov byte [rbx], '/'
         mov byte [rbx + 1], 'b'
@@ -553,7 +575,7 @@ func strcmp(s1: string, s2: string): u64 {
 # Shell — commands are pure Aether where possible
 # ============================================================
 
-func cmd_help() {
+func cmd_help(line: string) {
     serial_puts("\nAvailable commands:\n")
     serial_puts("  help     - Show this help\n")
     serial_puts("  ls       - List directory contents\n")
@@ -564,15 +586,164 @@ func cmd_help() {
     serial_puts("  mem      - Show memory info\n")
 }
 
-func cmd_ls() {
-    serial_puts("\nbin  etc  lib  tmp  dev\n")
+func cmd_ls(line: string) {
+    asm {
+        push rbx
+        push r12
+        push r13
+        push r14
+        push r15
+
+        ; Save line parameter
+        mov rbx, rdi
+
+        ; Print newline first
+        call serial_newline
+
+        ; Parse argument: skip "ls" command name
+        mov rsi, rbx
+    .skip_ls:
+        mov al, [rsi]
+        test al, al
+        jz .list_root
+        cmp al, 0x20
+        je .found_space
+        inc rsi
+        jmp .skip_ls
+    .found_space:
+        inc rsi
+    .skip_spaces:
+        mov al, [rsi]
+        cmp al, 0x20
+        jne .check_arg
+        inc rsi
+        jmp .skip_spaces
+    .check_arg:
+        test al, al
+        jz .list_root
+        ; Check if arg is "/bin" or starts with "/bin/"
+        cmp al, '/'
+        jne .list_root
+        inc rsi
+        mov al, [rsi]
+        cmp al, 'b'
+        jne .list_root
+        inc rsi
+        mov al, [rsi]
+        cmp al, 'i'
+        jne .list_root
+        inc rsi
+        mov al, [rsi]
+        cmp al, 'n'
+        jne .list_root
+        inc rsi
+        mov al, [rsi]
+        ; If next char is '/' or null, it's /bin
+        test al, al
+        jz .list_bin
+        cmp al, '/'
+        jne .list_root
+        ; It's /bin/... — just list bin for now
+        jmp .list_bin
+
+    .list_root:
+        lea rdi, [rel ls_buf]
+        mov rsi, 256
+        call fs_readdir_root
+        test rax, rax
+        jz .empty
+        lea rdi, [rel ls_buf]
+        call serial_puts
+        call serial_newline
+        jmp .done
+
+    .list_bin:
+        ; List binary index entries
+        lea rdi, [rel ls_buf]
+        mov r12, rdi
+        xor rcx, rcx
+        mov r14, [rel bin_index_count]
+        lea r15, [rel bin_index_names]
+    .bin_loop:
+        cmp rcx, r14
+        jae .bin_done
+        ; Copy name from bin_index_names[rcx * 32]
+        mov rsi, r15
+        mov rax, rcx
+        shl rax, 5
+        add rsi, rax
+        mov rdi, r12
+    .bin_copy:
+        mov al, [rsi]
+        test al, al
+        jz .bin_pad
+        mov [rdi], al
+        inc rsi
+        inc rdi
+        jmp .bin_copy
+    .bin_pad:
+        mov byte [rdi], 0x20
+        inc rdi
+        mov r12, rdi
+        inc rcx
+        jmp .bin_loop
+    .bin_done:
+        mov byte [r12], 0
+        lea rdi, [rel ls_buf]
+        call serial_puts
+        call serial_newline
+        jmp .done
+
+    .empty:
+        lea rdi, [rel empty_str]
+        call serial_puts
+        call serial_newline
+
+    .done:
+        pop r15
+        pop r14
+        pop r13
+        pop r12
+        pop rbx
+    }
 }
 
-func cmd_echo() {
-    serial_puts("\n")
+func cmd_echo(line: string) {
+    asm {
+        push rbx
+        ; Save line parameter
+        mov rbx, rdi
+        ; Print newline
+        call serial_newline
+        ; Scan past "echo " to get the text to echo
+        mov rsi, rbx
+    .skip_echo:
+        mov al, [rsi]
+        test al, al
+        jz .done
+        cmp al, 0x20
+        je .found_space
+        inc rsi
+        jmp .skip_echo
+    .found_space:
+        inc rsi
+    .skip_spaces:
+        mov al, [rsi]
+        cmp al, 0x20
+        jne .print
+        inc rsi
+        jmp .skip_spaces
+    .print:
+        mov rdi, rsi
+        call serial_puts
+        ; Print newline
+        call serial_newline
+    .done:
+        pop rbx
+    }
 }
 
-func cmd_reboot() {
+func cmd_reboot(line: string) {
     serial_puts("\nRebooting...\n")
     asm {
         mov al, 0xFE
@@ -584,7 +755,7 @@ func cmd_reboot() {
     }
 }
 
-func cmd_shutdown() {
+func cmd_shutdown(line: string) {
     serial_puts("\nShutting down...\n")
     asm {
         ; Try ACPI shutdown via PM1a control
@@ -606,7 +777,7 @@ func cmd_shutdown() {
     }
 }
 
-func cmd_clear() {
+func cmd_clear(line: string) {
     asm {
         mov dx, 0x3FD
     .wait:
@@ -619,7 +790,7 @@ func cmd_clear() {
     }
 }
 
-func cmd_mem() {
+func cmd_mem(line: string) {
     serial_puts("\nMemory: 256MB total\n")
     serial_puts("Page size: 4096 bytes\n")
     serial_puts("Bitmap at: 0xD000\n")
@@ -682,7 +853,259 @@ func read_line(): string {
         je .process
         cmp al, 0x7F
         je .process
+        cmp al, 0x09
+        je .tab
         jmp .loop
+    .tab:
+        ; Tab completion: find commands matching current input
+        push rcx
+        push rbx
+
+        ; Null-terminate current input for comparison
+        mov byte [rbx + rcx], 0
+
+        ; Search for matching commands
+        xor r8, r8          ; r8 = match count
+        mov r9, rcx         ; r9 = input length
+        mov r10, rbx        ; r10 = input pointer
+        lea r11, [rel cmd_names]
+        mov r15, [rel cmd_count]
+
+        xor r14, r14        ; r14 = cmd index
+    .tab_loop:
+        cmp r14, r15
+        jae .tab_done
+        mov rsi, [r11 + r14*8]
+        test rsi, rsi
+        jz .tab_next
+
+        ; Compare input with command name
+        mov rdi, r10
+        mov r12, r9
+    .tab_cmp:
+        mov al, [rdi]
+        mov dl, [rsi]
+        cmp al, dl
+        jne .tab_next
+        test al, al
+        jz .tab_match
+        inc rdi
+        inc rsi
+        dec r12
+        jnz .tab_cmp
+        ; Input is a prefix of this command name — check if name continues
+        mov al, [rsi]
+        test al, al
+        jz .tab_match
+        ; It's a prefix match
+    .tab_prefix:
+        inc r8
+        cmp r8, 1
+        jne .tab_next
+        ; First match — save the rest of the name
+        mov r13, rsi        ; r13 = pointer to remaining chars
+        jmp .tab_next
+
+    .tab_match:
+        ; Exact match — nothing to complete
+        xor r8, r8
+        jmp .tab_done
+
+    .tab_next:
+        inc r14
+        jmp .tab_loop
+
+    .tab_done:
+        cmp r8, 1
+        jne .tab_multi
+
+        ; Unique match — complete the command
+        mov rsi, r13
+    .tab_complete:
+        mov al, [rsi]
+        test al, al
+        jz .tab_end
+        cmp rcx, 254
+        jae .tab_end
+        mov [rbx + rcx], al
+        ; Echo the completed character
+        push rcx
+        push rdx
+        push rax
+        mov dx, COM1_LSR
+    .tab_echo_wait:
+        in al, dx
+        test al, LSR_THR_EMPTY
+        jz .tab_echo_wait
+        mov dx, COM1_DATA
+        pop rax
+        out dx, al
+        pop rdx
+        pop rcx
+        inc rcx
+        inc rsi
+        jmp .tab_complete
+
+    .tab_end:
+        pop rbx
+        pop rcx
+        jmp .loop
+
+    .tab_multi:
+        ; Multiple or no matches — show available commands
+        cmp r8, 0
+        je .tab_none
+
+        ; Show matching commands
+        push rcx
+        push rbx
+        ; Newline
+        mov dx, COM1_LSR
+    .tab_nl1:
+        in al, dx
+        test al, LSR_THR_EMPTY
+        jz .tab_nl1
+        mov dx, COM1_DATA
+        mov al, 0x0D
+        out dx, al
+        mov dx, COM1_LSR
+    .tab_nl2:
+        in al, dx
+        test al, LSR_THR_EMPTY
+        jz .tab_nl2
+        mov dx, COM1_DATA
+        mov al, 0x0A
+        out dx, al
+
+        ; Re-scan and print matches
+        xor r14, r14
+    .tab_print_loop:
+        cmp r14, r15
+        jae .tab_print_done
+        mov rsi, [r11 + r14*8]
+        test rsi, rsi
+        jz .tab_print_next
+
+        ; Check prefix match
+        mov rdi, r10
+        mov r12, r9
+    .tab_print_cmp:
+        mov al, [rdi]
+        mov dl, [rsi]
+        cmp al, dl
+        jne .tab_print_next
+        test al, al
+        jz .tab_print_match
+        inc rdi
+        inc rsi
+        dec r12
+        jnz .tab_print_cmp
+        ; Check if name continues
+        mov al, [rsi]
+        test al, al
+        jz .tab_print_next
+        ; It's a prefix match — print it
+        mov rsi, r10
+    .tab_print_name:
+        mov al, [rsi]
+        test al, al
+        jz .tab_print_done_name
+        push rcx
+        mov dx, COM1_LSR
+    .tab_print_wait:
+        in al, dx
+        test al, LSR_THR_EMPTY
+        jz .tab_print_wait
+        mov dx, COM1_DATA
+        pop rcx
+        mov al, [rsi]
+        out dx, al
+        inc rsi
+        jmp .tab_print_name
+    .tab_print_done_name:
+        ; Print space
+        mov dx, COM1_LSR
+    .tab_print_sp:
+        in al, dx
+        test al, LSR_THR_EMPTY
+        jz .tab_print_sp
+        mov dx, COM1_DATA
+        mov al, 0x20
+        out dx, al
+        jmp .tab_print_next
+
+    .tab_print_match:
+        ; Exact match — skip
+    .tab_print_next:
+        inc r14
+        jmp .tab_print_loop
+
+    .tab_print_done:
+        ; Newline after listing
+        mov dx, COM1_LSR
+    .tab_nl3:
+        in al, dx
+        test al, LSR_THR_EMPTY
+        jz .tab_nl3
+        mov dx, COM1_DATA
+        mov al, 0x0D
+        out dx, al
+        mov dx, COM1_LSR
+    .tab_nl4:
+        in al, dx
+        test al, LSR_THR_EMPTY
+        jz .tab_nl4
+        mov dx, COM1_DATA
+        mov al, 0x0A
+        out dx, al
+
+        ; Reprint prompt and current input
+        lea rdi, [rel aether_prompt]
+    .tab_reprint_prompt:
+        mov al, [rdi]
+        test al, al
+        jz .tab_reprint_input
+        mov dx, COM1_LSR
+    .tab_rp_wait:
+        in al, dx
+        test al, LSR_THR_EMPTY
+        jz .tab_rp_wait
+        mov dx, COM1_DATA
+        mov al, [rdi]
+        out dx, al
+        inc rdi
+        jmp .tab_reprint_prompt
+
+    .tab_reprint_input:
+        xor r14, r14
+    .tab_ri_loop:
+        cmp r14, r9
+        jae .tab_ri_done
+        mov al, [rbx + r14]
+        mov dx, COM1_LSR
+    .tab_ri_wait:
+        in al, dx
+        test al, LSR_THR_EMPTY
+        jz .tab_ri_wait
+        mov dx, COM1_DATA
+        mov al, [rbx + r14]
+        out dx, al
+        inc r14
+        jmp .tab_ri_loop
+    .tab_ri_done:
+        pop rbx
+        pop rcx
+        jmp .loop
+
+    .tab_none:
+        ; No matches — ring bell
+        mov dx, COM1_DATA
+        mov al, 0x07
+        out dx, al
+        pop rbx
+        pop rcx
+        jmp .loop
+
     .process:
         cmp al, 0x08
         je .backspace
@@ -800,11 +1223,18 @@ func exec_cmd(cmd: string) {
     .end_name:
         mov byte [rdi], 0
 
+        ; If first char is '/', skip inline lookup and go straight to path
+        mov al, [r13]
+        cmp al, '/'
+        je .try_path
+
         ; Look up command by name
         mov rdi, r13
         call find_cmd_impl
         test rax, rax
         jz .try_path
+        ; Pass full input line to handler
+        mov rdi, r12
         call rax
         jmp .done
 
@@ -814,7 +1244,10 @@ func exec_cmd(cmd: string) {
         test rax, rax
         jz .not_found
 
-        mov rdi, rax
+        ; Save resolved path in r12
+        mov r12, rax
+
+        mov rdi, r12
         call exec_binary
         jmp .done
 
@@ -899,15 +1332,15 @@ func sys_puts_stub(s: string) {
 }
 
 func sys_open_stub(path: string): u64 {
-    return 0
+    return fs_open(path)
 }
 
 func sys_read_stub(ino: u64, buf: string, len: u64): u64 {
-    return 0
+    return fs_read(ino, buf, len)
 }
 
 func sys_readdir_stub(ino: u64, buf: string): u64 {
-    return 0
+    return fs_readdir_root(buf, 256)
 }
 
 func sys_getcwd_stub(): u64 {
@@ -1157,8 +1590,9 @@ func ata_read_sectors(lba: u64, count: u64, buf: string): u64 {
         pop r13
         pop r12
         pop rbx
+        leave
+        ret
     }
-    return 0
 }
 
 # ============================================================
@@ -1166,29 +1600,12 @@ func ata_read_sectors(lba: u64, count: u64, buf: string): u64 {
 # ============================================================
 
 # compute_kernel_end_sector(): u64
-# Computes the end sector of the kernel on disk using __bss_end.
-# kernel_end_sector = KERNEL_START_SECTOR + (kernel_size + 511) / 512
+# Reads the index sector number from bin_index_sector_val, which is patched
+# by build_image.py at build time.
 func compute_kernel_end_sector(): u64 {
     let result: u64 = 0
     asm {
-        extern __bss_end
-    }
-    asm {
-        ; kernel_size = __bss_end - KERNEL_LINK_ADDR
-        mov rax, __bss_end
-        sub rax, KERNEL_LINK_ADDR
-
-        ; Add boot preamble size (16KB = 0x4000)
-        add rax, 0x4000
-
-        ; kernel_end_sector = KERNEL_START_SECTOR + (kernel_size + 511) / 512
-        add rax, 511
-        xor rdx, rdx
-        mov rcx, 512
-        div rcx
-        add rax, KERNEL_START_SECTOR
-
-        ; Store to result variable's stack slot
+        mov rax, [bin_index_sector_val]
         mov [rbp-8], rax
     }
     return result
@@ -1478,39 +1895,55 @@ func fs_read(ino: u64, buf: string, len: u64): u64 {
         pop r13
         pop r12
         pop rbx
+        leave
+        ret
     }
-    return 0
 }
 
-func fs_readdir(ino: u64, buf: string): u64 {
+func fs_readdir_root(buf: string, len: u64): u64 {
     asm {
         push rbx
         push r12
         push r13
         push r14
-        push r15
 
-        mov r12, rdi        ; r12 = ino
-        mov r15, rsi        ; r15 = original buf (save for length calc)
+        mov r13, rdi        ; r13 = buf
+        mov r14, rsi        ; r14 = max len
 
-        ; Check if ino == 2 (/bin directory)
-        cmp r12, 2
-        jne .not_found
+        ; Walk inode table starting at index 1 (skip root itself)
+        ; Each inode entry is 24 bytes: [inode_num:u64, flags:u64, name_ptr:u64]
+        lea rbx, [rel inode_table]
+        mov r12, r13        ; r12 = current write position
+        xor rcx, rcx        ; rcx = inode index
 
-        ; Iterate through binary index entries
-        xor r14, r14        ; r14 = entry index
-        lea rbx, [rel bin_index_names]  ; rbx = names buffer
-        mov r13, r15        ; r13 = current buf pointer
-
-    .entry_loop:
-        cmp r14, [rel bin_index_count]
+    .loop:
+        cmp rcx, MAX_INODES
         jae .done
 
-        ; Copy name from bin_index_names[index * 32] to buf
-        mov rsi, r14
-        shl rsi, 5          ; multiply by 32
-        add rsi, rbx
-        mov rdi, r13
+        ; Skip root entry (index 0)
+        cmp rcx, 0
+        je .next
+
+        ; Each entry slot is 24 bytes apart
+        ; create_dir stores name_ptr at slot+0, flags at slot+8
+        ; Read name_ptr from slot address
+        mov r8, rcx
+        shl r8, 4           ; rcx * 16
+        mov rdx, rcx
+        shl rdx, 3          ; rcx * 8
+        add r8, rdx         ; rcx * 24
+        add r8, rbx
+        mov rax, [r8]       ; name_ptr at slot+0
+        test rax, rax
+        jz .next
+
+        ; Skip root entry (index 0)
+        cmp rcx, 0
+        je .next
+
+        ; Copy name to buffer
+        mov rsi, rax
+        mov rdi, r12
     .copy_name:
         mov al, [rsi]
         test al, al
@@ -1525,32 +1958,37 @@ func fs_readdir(ino: u64, buf: string): u64 {
         mov byte [rdi], 0
         inc rdi
 
-        ; Add newline
-        mov byte [rdi], 0x0A
+        ; Add space separator
+        mov byte [rdi], 0x20
         inc rdi
 
-        ; Update buf pointer for next entry
-        mov r13, rdi
+        ; Check if we've exceeded buffer
+        mov rax, rdi
+        sub rax, r13
+        cmp rax, r14
+        jae .done
 
-        inc r14
-        jmp .entry_loop
+        mov r12, rdi
+
+    .next:
+        inc rcx
+        jmp .loop
 
     .done:
-        ; Return total bytes written = current - original
-        mov rax, r13
-        sub rax, r15
-        jmp .out
+        ; Null-terminate the buffer
+        mov byte [r12], 0
 
-    .not_found:
-        xor rax, rax
-    .out:
-        pop r15
+        ; Return bytes written
+        mov rax, r12
+        sub rax, r13
+
         pop r14
         pop r13
         pop r12
         pop rbx
+        leave
+        ret
     }
-    return 0
 }
 
 func fs_getcwd(): u64 {

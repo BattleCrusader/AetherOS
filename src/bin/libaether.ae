@@ -1,74 +1,78 @@
 # Aether OS — LibAether (Userspace Runtime)
 # Thin wrappers around the syscall page at 0x5000
 # Included by all /bin/ binaries
+# The syscall page stores function POINTERS at each offset.
+# To call: load the pointer, then call it.
+# IMPORTANT: Use [abs 0x5xxx] to force absolute addressing (not RIP-relative).
+# IMPORTANT: asm blocks with `ret` suppress the compiler's default return.
 
-# Syscall wrappers — direct calls through fixed address table
+# Syscall wrappers — load function pointer from table, then call it
 func putc(c: u8) {
     asm {
-        mov rax, 0x5000
+        mov rax, [abs 0x5000]
         call rax
     }
 }
 
 func puts(s: string) {
     asm {
-        mov rax, 0x5008
+        mov rax, [abs 0x5008]
         call rax
     }
 }
 
-func open(path: string): u32 {
+func open(path: string): u64 {
     asm {
-        mov rax, 0x5010
+        mov rax, [abs 0x5010]
         call rax
+        ret
     }
-    return 0
 }
 
-func read(ino: u32, buf: string, len: u32): u32 {
+func read(ino: u64, buf: string, len: u64): u64 {
     asm {
-        mov rax, 0x5018
+        mov rax, [abs 0x5018]
         call rax
+        ret
     }
-    return 0
 }
 
-func readdir(ino: u32, buf: string): u32 {
+func readdir(ino: u64, buf: string, len: u64): u64 {
     asm {
-        mov rax, 0x5020
+        mov rax, [abs 0x5020]
         call rax
+        ret
     }
-    return 0
 }
 
-func getcwd(): u32 {
+func getcwd(): u64 {
     asm {
-        mov rax, 0x5028
+        mov rax, [abs 0x5028]
         call rax
+        ret
     }
-    return 0
 }
 
-func chdir(ino: u32) {
+func chdir(ino: u64) {
     asm {
-        mov rax, 0x5030
+        mov rax, [abs 0x5030]
         call rax
     }
 }
 
 func exit_bin() {
     asm {
-        mov rax, 0x5038
+        mov rax, [abs 0x5038]
         call rax
     }
 }
 
 func booleval(v: u64): u64 {
     asm {
-        mov rax, 0x5040
+        mov rax, [abs 0x5040]
         call rax
+        ret
     }
-    return 0
 }
 
 # Utility functions

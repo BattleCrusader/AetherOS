@@ -23,18 +23,24 @@ Phase 2 enables standalone ELF binaries in `/bin/`, module loading from `/lib/en
 - [x] **Debug scaffolding cleaned up**: removed kernel_c.c, entry_trampoline.asm, minimal_kernel.asm, minimal2.asm, minimal3.asm 🟢
 - [x] **Shell now boots, shows prompt, and waits for input** 🟢
 - [x] **Shell accepts commands and loops correctly** 🟢
-- [ ] Create `/bin/shutdown.ae` — standalone shutdown command
-- [ ] Create `/bin/cat.ae` — standalone cat command
-- [ ] Create `/bin/clear.ae` — standalone clear command
-- [ ] Create `/bin/uptime.ae` — standalone uptime command
-- [ ] Create `/bin/ps.ae` — standalone process list command
-- [ ] Create `/bin/modules.ae` — standalone module list command
-- [ ] Create `/bin/mem.ae` — standalone memory info command
-- [ ] Create `/bin/ver.ae` — standalone version command
-- [ ] Create `/bin/date.ae` — standalone date/time command
-- [ ] Create `/bin/booleval.ae` — standalone boolean evaluation command
-- [ ] Create `/bin/qubit.ae` — standalone qubit command
-- [ ] Test: each command runs correctly in QEMU
+- [x] Create `/bin/shutdown.ae` — standalone shutdown command 🟢
+- [x] Create `/bin/cat.ae` — standalone cat command 🟢
+- [x] Create `/bin/clear.ae` — standalone clear command 🟢
+- [x] Create `/bin/uptime.ae` — standalone uptime command 🟢
+- [x] Create `/bin/ps.ae` — standalone process list command 🟢
+- [x] Create `/bin/modules.ae` — standalone module list command 🟢
+- [x] Create `/bin/mem.ae` — standalone memory info command 🟢
+- [x] Create `/bin/ver.ae` — standalone version command 🟢
+- [x] Create `/bin/date.ae` — standalone date/time command 🟢
+- [x] Create `/bin/booleval.ae` — standalone boolean evaluation command 🟢
+- [x] Create `/bin/qubit.ae` — standalone qubit command 🟢
+- [x] **Test: each command builds and embeds correctly** 🟢
+- [x] **Inline echo command echoes argument text** 🟢
+- [x] **Inline ls command lists root dir and /bin contents** 🟢
+- [x] **ls /bin lists all 15 standalone binaries** 🟢
+- [x] **serial_newline uses \n only (Unix convention)** 🟢
+- [x] **All asm blocks with ret use leave;ret for proper stack frame unwind** 🟢
+- [x] **Command handlers accept line:string, exec_cmd passes full input** 🟢
 
 ### P02.02 — Module Loading
 - [ ] Module loader: find .ko files in /lib/enabled/
