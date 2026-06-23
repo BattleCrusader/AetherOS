@@ -83,8 +83,17 @@ asm {
 ; Stack at entry: [rbx, r12, r13, r14, r15, error_code, ret_addr, cs, rflags, rsp, ss]
 global fault_handler_common
 fault_handler_common:
+    ; Save fault info in callee-saved regs (already saved by stub)
+    mov r12, rdi        ; faultType
+    mov r13, rsi        ; errorCode
+    mov r14, rdx        ; faultAddr
+
+    ; Check if a transaction is active (trans_active != 0)
+    cmp qword [rel trans_active], 0
+    je .dump_and_halt
+
     ; Check if fault address is in binary space (0x2000000 - 0x2100000)
-    mov rax, rdx
+    mov rax, r14
     cmp rax, BIN_BASE
     jb .dump_and_halt
     cmp rax, BIN_END
@@ -93,35 +102,37 @@ fault_handler_common:
     ; Binary crash — print message
     lea rdi, [rel binary_crash]
     call serial_puts
-    mov rdi, rdx
+    mov rdi, r14
     call serial_puthex
     call serial_newline
 
     ; Restore kernel context: restore rsp and jump to saved return address
-    ; This abandons the interrupt frame and the binary's stack entirely.
-    ; The kernel continues from the saved return address as if the binary
-    ; call never happened.
     mov rsp, [rel trans_save_rsp]
     mov rax, [rel trans_save_ret]
     jmp rax
 
 .dump_and_halt:
+    ; Save fault info in callee-saved registers before calling serial functions
+    mov r12, rdi        ; faultType
+    mov r13, rsi        ; errorCode
+    mov r14, rdx        ; faultAddr
+
     ; Print fault info
     lea rdi, [rel fault_header]
     call serial_puts
     lea rdi, [rel fault_type_str]
     call serial_puts
-    mov rdi, rdi
+    mov rdi, r12
     call serial_puthex
     call serial_newline
     lea rdi, [rel error_code_str]
     call serial_puts
-    mov rdi, rsi
+    mov rdi, r13
     call serial_puthex
     call serial_newline
     lea rdi, [rel fault_addr_str]
     call serial_puts
-    mov rdi, rdx
+    mov rdi, r14
     call serial_puthex
     call serial_newline
     lea rdi, [rel halt_str]
@@ -244,7 +255,8 @@ func init_idt() {
         mov dl, IDT_GATE_INTERRUPT
         call set_idt_entry
 
-        mov word [IDT_ADDR - 2], IDT_LIMIT
-        lidt [IDT_ADDR - 2]
+        mov word [IDT_ADDR - 10], IDT_LIMIT
+        mov qword [IDT_ADDR - 8], IDT_ADDR
+        lidt [IDT_ADDR - 10]
     }
 }
