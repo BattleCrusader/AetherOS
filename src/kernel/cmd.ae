@@ -1,0 +1,230 @@
+# Aether OS — Command System
+# Pure Aether command registration, lookup, and execution.
+# Only uses asm for reading/writing the BSS command table arrays
+# (Aether cannot express absolute memory addresses yet).
+
+const CMD_NAMES_ADDR = 0x1005F40
+const CMD_HANDLERS_ADDR = 0x1005FC0
+const CMD_COUNT_ADDR = 0x10060C0
+const MAX_CMDS = 16
+
+# ============================================================
+# Internal helpers — asm for BSS access
+# ============================================================
+
+func getCmdCount(): u64 {
+    let result: u64 = 0
+    asm {
+        mov rax, [CMD_COUNT_ADDR]
+        mov [rbp-8], rax
+    }
+    return result
+}
+
+func setCmdCount(val: u64) {
+    asm {
+        mov rax, rdi
+        mov [CMD_COUNT_ADDR], rax
+    }
+}
+
+func getCmdName(index: u64): string {
+    let result: string = 0
+    asm {
+        mov rax, rdi
+        shl rax, 3
+        add rax, CMD_NAMES_ADDR
+        mov rax, [rax]
+        mov [rbp-8], rax
+    }
+    return result
+}
+
+func setCmdName(index: u64, name: string) {
+    asm {
+        mov rax, rdi
+        shl rax, 3
+        add rax, CMD_NAMES_ADDR
+        mov [rax], rsi
+    }
+}
+
+func getCmdHandler(index: u64): u64 {
+    let result: u64 = 0
+    asm {
+        mov rax, rdi
+        shl rax, 3
+        add rax, CMD_HANDLERS_ADDR
+        mov rax, [rax]
+        mov [rbp-8], rax
+    }
+    return result
+}
+
+func setCmdHandler(index: u64, handler: u64) {
+    asm {
+        mov rax, rdi
+        shl rax, 3
+        add rax, CMD_HANDLERS_ADDR
+        mov [rax], rsi
+    }
+}
+
+# ============================================================
+# String comparison — pure Aether
+# ============================================================
+
+func strEqual(a: string, b: string): bool {
+    let i: u64 = 0
+    while a[i] != 0 {
+        if a[i] != b[i] {
+            return false
+        }
+        i = i + 1
+    }
+    return b[i] == 0
+}
+
+# ============================================================
+# Public API
+# ============================================================
+
+func registerCommand(name: string, handler: u64) {
+    let count: u64 = getCmdCount()
+    if count < MAX_CMDS {
+        setCmdName(count, name)
+        setCmdHandler(count, handler)
+        setCmdCount(count + 1)
+    }
+}
+
+func findCommand(name: string): u64 {
+    let count: u64 = getCmdCount()
+    let i: u64 = 0
+    while i < count {
+        let cmdName: string = getCmdName(i)
+        if cmdName != 0 {
+            if strEqual(name, cmdName) {
+                return getCmdHandler(i)
+            }
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+func unregisterCommand(name: string) {
+    let count: u64 = getCmdCount()
+    let i: u64 = 0
+    while i < count {
+        let cmdName: string = getCmdName(i)
+        if cmdName != 0 {
+            if strEqual(name, cmdName) {
+                let j: u64 = i
+                while j + 1 < count {
+                    setCmdName(j, getCmdName(j + 1))
+                    setCmdHandler(j, getCmdHandler(j + 1))
+                    j = j + 1
+                }
+                setCmdCount(count - 1)
+                return
+            }
+        }
+        i = i + 1
+    }
+}
+
+# ============================================================
+# Command implementations — pure Aether
+# ============================================================
+
+func cmdHelp(line: string) {
+    serial_puts("\nBuilt-in commands:\n")
+    let count: u64 = getCmdCount()
+    let i: u64 = 0
+    while i < count {
+        let cmdName: string = getCmdName(i)
+        if cmdName != 0 {
+            serial_puts("  ")
+            serial_puts(cmdName)
+            serial_newline()
+        }
+        i = i + 1
+    }
+    serial_puts("\nBinaries in /bin:\n")
+    # List from binary index — call back to main.ae
+    listBinaries()
+}
+
+func cmdEcho(line: string) {
+    # Find the text after "echo "
+    let i: u64 = 0
+    while line[i] != 0 {
+        if line[i] == 0x20 {
+            i = i + 1
+            # Skip any extra spaces
+            while line[i] == 0x20 {
+                i = i + 1
+            }
+            # Print the rest of the line character by character
+            while line[i] != 0 {
+                serial_putc(line[i])
+                i = i + 1
+            }
+            serial_newline()
+            return
+        }
+        i = i + 1
+    }
+    serial_newline()
+}
+
+func cmdReboot(line: string) {
+    serial_puts("\nRebooting...\n")
+    asm {
+        mov al, 0xFE
+        out 0x64, al
+        cli
+    .halt:
+        hlt
+        jmp .halt
+    }
+}
+
+func cmdShutdown(line: string) {
+    serial_puts("\nShutting down...\n")
+    asm {
+        mov dx, 0xB004
+        mov ax, 0x2000
+        out dx, ax
+        mov dx, 0x604
+        mov ax, 0x2000
+        out dx, ax
+        mov dx, 0xB000
+        mov ax, 0x2000
+        out dx, ax
+        cli
+    .halt:
+        hlt
+        jmp .halt
+    }
+}
+
+func cmdClear(line: string) {
+    asm {
+        mov dx, 0x3FD
+    .wait:
+        in al, dx
+        test al, 0x20
+        jz .wait
+        mov dx, 0x3F8
+        mov al, 0x0C
+        out dx, al
+    }
+}
+
+func cmdMem(line: string) {
+    serial_puts("\nMemory: 256MB total\n")
+    serial_puts("Page size: 4096 bytes\n")
+    serial_puts("Bitmap at: 0xD000\n")
+}

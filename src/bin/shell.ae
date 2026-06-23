@@ -1,0 +1,8 @@
+# Aether OS — shell command
+# Standalone binary: prints prompt and reads input
+import "/Users/cyberdeth/.local/lib/aether/libaether"
+
+func main(): u64 {
+    print("Aether>\n")
+    return 0
+}

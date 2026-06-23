@@ -1,0 +1,98 @@
+# Aether OS — ELF Loader
+# Loads an ELF64 binary from a memory buffer: parses program headers,
+# copies segments to their virtual addresses, zeros BSS.
+# Asm helpers return rax directly (compiler now preserves it).
+
+# readU64(addr: u64): u64 — read a u64 from a raw memory address
+func readU64(addr: u64): u64 {
+    asm {
+        mov rax, [rdi]
+    }
+}
+
+# readU32(addr: u64): u64 — read a u32 from a raw memory address (zero-extended)
+func readU32(addr: u64): u64 {
+    asm {
+        mov eax, [rdi]
+    }
+}
+
+# readU8(addr: u64): byte — read a byte from a raw memory address
+func readU8(addr: u64): byte {
+    asm {
+        movzx rax, byte [rdi]
+    }
+}
+
+# readU16(addr: u64): u64 — read a u16 from a raw memory address (zero-extended)
+func readU16(addr: u64): u64 {
+    asm {
+        mov ax, [rdi]
+        movzx rax, ax
+    }
+}
+
+# copyMemory(dst: u64, src: u64, count: u64) — byte copy
+func copyMemory(dst: u64, src: u64, count: u64) {
+    asm {
+        mov rdi, rdi
+        mov rsi, rsi
+        mov rcx, rdx
+        rep movsb
+    }
+}
+
+# zeroMemory(addr: u64, count: u64) — zero fill
+func zeroMemory(addr: u64, count: u64) {
+    asm {
+        mov rdi, rdi
+        mov rcx, rsi
+        xor al, al
+        rep stosb
+    }
+}
+
+# callEntry(entryAddr: u64) — call a function at a given address with clean regs
+func callEntry(entryAddr: u64) {
+    asm {
+        mov rax, rdi        ; save entryAddr — do this FIRST before clobbering rdi
+        xor rdi, rdi        ; clear argc (for binary _start wrappers)
+        xor rsi, rsi        ; clear argv
+        call rax
+    }
+}
+
+# ELF constants
+const PT_LOAD = 1
+const PHDR_SIZE = 56
+
+# loadElf(buf: u64): u64
+# Loads an ELF64 binary from memory buffer at 'buf'.
+# Returns the entry point address, or 0 on failure.
+func loadElf(buf: u64): u64 {
+    let magic: u64 = readU32(buf)
+    if magic != 0x464C457F { return 0 }
+
+    let entryAddr: u64 = readU64(buf + 24)
+    let phoff: u64 = readU64(buf + 32)
+    let phnum: u64 = readU16(buf + 56)
+
+    let i: u64 = 0
+    while i < phnum {
+        let phAddr: u64 = buf + phoff + i * PHDR_SIZE
+        let segType: u64 = readU32(phAddr)
+
+        if segType == PT_LOAD {
+            let segOffset: u64 = readU64(phAddr + 8)
+            let segVaddr: u64 = readU64(phAddr + 16)
+            let segFilesz: u64 = readU64(phAddr + 32)
+            let segMemsz: u64 = readU64(phAddr + 40)
+
+            if segFilesz > 0 { copyMemory(segVaddr, buf + segOffset, segFilesz) }
+            if segMemsz > segFilesz { zeroMemory(segVaddr + segFilesz, segMemsz - segFilesz) }
+        }
+        i = i + 1
+    }
+
+    return entryAddr
+}

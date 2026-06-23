@@ -1,0 +1,108 @@
+# Aether OS — ATA PIO Disk Read
+# Port I/O requires asm blocks — this is the only file with asm.
+# Exports: ata_read_sectors(lba, count, buf) -> u64
+
+const ATA_DATA = 0x1F0
+const ATA_FEATURES = 0x1F1
+const ATA_SECTOR_COUNT = 0x1F2
+const ATA_LBA_LO = 0x1F3
+const ATA_LBA_MID = 0x1F4
+const ATA_LBA_HI = 0x1F5
+const ATA_DRIVE = 0x1F6
+const ATA_CMD = 0x1F7
+
+# ata_read_sectors(lba: u64, count: u64, buf: u64): u64
+# Reads 'count' sectors starting at LBA 'lba' into memory at 'buf'.
+# Returns number of sectors read (0 on error).
+func ata_read_sectors(lba: u64, count: u64, buf: u64): u64 {
+    asm {
+        push rbx
+        push r12
+        push r13
+
+        mov r12, rdi        ; r12 = lba
+        mov r13, rsi        ; r13 = count
+        mov rbx, rdx        ; rbx = buf
+
+        ; Wait for BSY=0
+        mov dx, ATA_CMD
+    .wait_not_bsy:
+        in al, dx
+        test al, 0x80
+        jnz .wait_not_bsy
+
+        ; Select drive: 0xE0 | ((lba >> 24) & 0x0F)
+        mov rax, r12
+        shr rax, 24
+        and al, 0x0F
+        or al, 0xE0
+        mov dx, ATA_DRIVE
+        out dx, al
+
+        ; Features = 0
+        mov dx, ATA_FEATURES
+        xor al, al
+        out dx, al
+
+        ; Sector count
+        mov dx, ATA_SECTOR_COUNT
+        mov al, r13b
+        out dx, al
+
+        ; LBA low (bits 7:0)
+        mov dx, ATA_LBA_LO
+        mov al, r12b
+        out dx, al
+
+        ; LBA mid (bits 15:8)
+        mov dx, ATA_LBA_MID
+        mov rax, r12
+        shr rax, 8
+        out dx, al
+
+        ; LBA high (bits 23:16)
+        mov dx, ATA_LBA_HI
+        mov rax, r12
+        shr rax, 16
+        out dx, al
+
+        ; Send READ SECTORS command (0x20)
+        mov dx, ATA_CMD
+        mov al, 0x20
+        out dx, al
+
+        xor rcx, rcx        ; rcx = sectors read so far
+
+    .sector_loop:
+        cmp rcx, r13
+        jae .done
+
+        ; Wait for BSY=0 and DRQ=1
+        mov dx, ATA_CMD
+    .wait_drq:
+        in al, dx
+        test al, 0x80       ; BSY
+        jnz .wait_drq
+        test al, 0x08       ; DRQ
+        jz .wait_drq
+
+        ; Read 256 words (512 bytes) from data port
+        mov dx, ATA_DATA
+        mov rdi, rbx
+        push rcx            ; save sector count
+        mov cx, 256
+        rep insw
+        pop rcx             ; restore sector count
+
+        ; Advance buffer
+        add rbx, 512
+        inc rcx
+        jmp .sector_loop
+
+    .done:
+        mov rax, rcx
+        pop r13
+        pop r12
+        pop rbx
+    }
+}

@@ -76,17 +76,24 @@ def main():
     # Format: [count:u32] [start_sector:u32, size:u32, name:32bytes] x count
     # Place index IMMEDIATELY after kernel so kernel_end_sector points to it
     index_data = struct.pack('<I', len(binaries))
-    current_sector = binary_start_sector
     for name, data in binaries:
         data_sectors = ((len(data) + 511) // 512)
-        index_data += struct.pack('<II', current_sector, len(data))
+        index_data += struct.pack('<II', 0, len(data))  # placeholder sector
         name_bytes = name.encode('ascii').ljust(32, b'\x00')[:32]
         index_data += name_bytes
-        current_sector += data_sectors
 
     # Pad index to sector boundary
-    index_padded = index_data.ljust(((len(index_data) + 511) // 512) * 512, b'\x00')
+    index_padded = bytearray(index_data.ljust(((len(index_data) + 511) // 512) * 512, b'\x00'))
+    index_sectors = len(index_padded) // 512
     index_start_sector = kernel_start_sector + kernel_sectors
+
+    # Now compute actual binary start sectors and patch them in
+    current_sector = index_start_sector + index_sectors
+    for i, (name, data) in enumerate(binaries):
+        data_sectors = ((len(data) + 511) // 512)
+        entry_offset = 4 + i * 40
+        struct.pack_into('<I', index_padded, entry_offset, current_sector)
+        current_sector += data_sectors
 
     # Patch the kernel binary with the index sector number
     # Search for "AETHBINX" marker followed by 8 bytes to patch (dq)
