@@ -16,6 +16,7 @@ def main():
     parser.add_argument('--stage2', required=True, help='Stage2 loader binary (16KB)')
     parser.add_argument('--kernel', required=True, help='Kernel combined binary')
     parser.add_argument('--bin-dir', required=True, help='Directory containing .elf binaries')
+    parser.add_argument('--module-dir', default=None, help='Directory containing .ko modules')
     parser.add_argument('--output', required=True, help='Output disk image path')
     args = parser.parse_args()
 
@@ -49,6 +50,18 @@ def main():
                     data = f.read()
                 name = fname[:-4]  # strip .elf
                 binaries.append((name, data))
+
+    # Read modules
+    modules = []
+    mod_dir = args.module_dir
+    if mod_dir and os.path.isdir(mod_dir):
+        for fname in sorted(os.listdir(mod_dir)):
+            if fname.endswith('.ko'):
+                fpath = os.path.join(mod_dir, fname)
+                with open(fpath, 'rb') as f:
+                    data = f.read()
+                name = fname[:-3]  # strip .ko
+                modules.append((name, data))
 
     # Calculate sector layout
     # Sector 0: stage1 (MBR)
@@ -101,6 +114,11 @@ def main():
         f.write(index_padded)
         # Write binaries after index
         for name, data in binaries:
+            data_padded = data.ljust(((len(data) + 511) // 512) * 512, b'\x00')
+            f.write(data_padded)
+
+        # Write modules after binaries
+        for name, data in modules:
             data_padded = data.ljust(((len(data) + 511) // 512) * 512, b'\x00')
             f.write(data_padded)
 

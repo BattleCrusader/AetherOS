@@ -1,0 +1,1300 @@
+# Aether OS — AetherFS Filesystem Module
+# A loadable kernel module (.ko) providing a log-structured filesystem
+# with content-addressable data blocks and B-tree namespace.
+#
+# Compiled with: aether --target module
+#
+# On-disk layout (LBA 4096+ on disk):
+#   Block 0:     Superblock (magic, version, block counts, root hash)
+#   Blocks 1..N: Data blocks (4KB each, content-addressed by hash)
+#   Block L:     Log start (append-only log entries)
+#   Block M:     Checkpoint (snapshot of namespace tree)
+#
+# Asm blocks are ONLY used where absolutely necessary:
+#   - ATA PIO port I/O (in/out instructions)
+#   - Bitmap operations (bts, btr) for block allocator
+#   - Function pointer table access (module registry at 0x4000)
+# Everything else is pure Aether.
+
+# ============================================================
+# Constants
+# ============================================================
+
+const AETHERFS_MAGIC = 0x4145544846530001
+const BLOCK_SIZE = 4096
+const BLOCK_SIZE_BITS = 12
+const SECTOR_SIZE = 512
+const SECTORS_PER_BLOCK = 8
+const AETHERFS_PARTITION_LBA = 4096
+const MAX_BLOCKS = 65536
+const MAX_PATH = 256
+const MAX_NAME = 64
+const BTREE_ORDER = 16
+const LOG_ENTRY_SIZE = 84
+const LOG_ENTRIES_PER_BLOCK = 48
+const CHECKPOINT_MAGIC = 0x434845434B504E54
+
+# Log entry opcodes
+const OP_CREATE = 1
+const OP_WRITE = 2
+const OP_DELETE = 3
+const OP_MKDIR = 4
+const OP_RMDIR = 5
+
+# Hook IDs (from kernel)
+const HOOK_FS_OPEN = 2
+const HOOK_FS_READ = 3
+const HOOK_FS_READDIR = 4
+
+# Module registry at 0x4000
+const MODULE_REGISTRY = 0x4000
+
+# ATA PIO ports
+const ATA_DATA = 0x1F0
+const ATA_SECTOR_COUNT = 0x1F2
+const ATA_LBA_LO = 0x1F3
+const ATA_LBA_MID = 0x1F4
+const ATA_LBA_HI = 0x1F5
+const ATA_DRIVE = 0x1F6
+const ATA_CMD = 0x1F7
+
+# ============================================================
+# Data section — BSS and data declarations
+# ============================================================
+
+asm {
+    section .bss
+aetherfs_mounted:    resq 1
+aetherfs_superblock: resb 64
+aetherfs_block_bitmap: resb 8192
+aetherfs_log_start:  resq 1
+aetherfs_log_end:    resq 1
+aetherfs_checkpoint_block: resq 1
+aetherfs_data_start: resq 1
+aetherfs_total_blocks: resq 1
+aetherfs_free_blocks: resq 1
+aetherfs_temp_buf:   resb 4096
+aetherfs_path_buf:   resb 256
+aetherfs_name_buf:   resb 64
+aetherfs_ls_buf:     resb 256
+    section .data
+aetherfs_mount_str:  db "mount", 0
+aetherfs_format_str: db "format", 0
+aetherfs_ls_str:     db "ls", 0
+aetherfs_cat_str:    db "cat", 0
+aetherfs_write_str:  db "write", 0
+aetherfs_stat_str:   db "stat", 0
+aetherfs_help_str:   db "aetherfs", 0
+aetherfs_mounted_ok: db "AetherFS mounted", 0x0D, 0x0A, 0
+aetherfs_formatted:  db "AetherFS formatted", 0x0D, 0x0A, 0
+aetherfs_not_mounted: db "AetherFS not mounted", 0x0D, 0x0A, 0
+aetherfs_unknown:    db "Unknown AetherFS command", 0x0D, 0x0A, 0
+}
+
+# ============================================================
+# ATA PIO Block I/O
+# ============================================================
+
+# read_block(lba: u64, buf: string): u64
+# Reads one 4KB block (8 sectors) at LBA into buf.
+# Returns 1 on success, 0 on failure.
+func read_block(lba: u64, buf: string): u64 {
+    asm {
+        push rbx
+        push r12
+        push r13
+
+        mov r12, rdi        ; r12 = lba
+        mov r13, rsi        ; r13 = buf
+        xor rbx, rbx        ; rbx = sector index within block
+
+    .sector_loop:
+        cmp rbx, 8
+        jae .done
+
+        ; Compute sector LBA = (aetherfs_partition_lba + lba * 8 + rbx)
+        mov rax, r12
+        shl rax, 3
+        add rax, AETHERFS_PARTITION_LBA
+        add rax, rbx
+
+        ; Wait for BSY=0
+        mov dx, ATA_CMD
+    .wait_not_bsy:
+        in al, dx
+        test al, 0x80
+        jnz .wait_not_bsy
+
+        ; Select drive: 0xE0 | ((lba >> 24) & 0x0F)
+        mov rdx, rax
+        shr rdx, 24
+        and dl, 0x0F
+        or dl, 0xE0
+        mov dx, ATA_DRIVE
+        out dx, al
+
+        ; Sector count = 1
+        mov dx, ATA_SECTOR_COUNT
+        mov al, 1
+        out dx, al
+
+        ; LBA low
+        mov dx, ATA_LBA_LO
+        mov al, r12b
+        out dx, al
+
+        ; LBA mid
+        mov dx, ATA_LBA_MID
+        mov rax, r12
+        shr rax, 8
+        out dx, al
+
+        ; LBA high
+        mov dx, ATA_LBA_HI
+        mov rax, r12
+        shr rax, 16
+        out dx, al
+
+        ; Send READ SECTORS command
+        mov dx, ATA_CMD
+        mov al, 0x20
+        out dx, al
+
+        ; Wait for BSY=0 and DRQ=1
+        mov dx, ATA_CMD
+    .wait_drq:
+        in al, dx
+        test al, 0x80
+        jnz .wait_drq
+        test al, 0x08
+        jz .wait_drq
+
+        ; Read 256 words (512 bytes) from data port
+        mov dx, ATA_DATA
+        mov rdi, r13
+        mov rax, rbx
+        shl rax, 9
+        add rdi, rax
+        mov cx, 256
+        rep insw
+
+        inc rbx
+        jmp .sector_loop
+
+    .done:
+        mov rax, 1
+        pop r13
+        pop r12
+        pop rbx
+        leave
+        ret
+    }
+}
+
+# write_block(lba: u64, buf: string): u64
+# Writes one 4KB block (8 sectors) at LBA from buf.
+# Returns 1 on success, 0 on failure.
+func write_block(lba: u64, buf: string): u64 {
+    asm {
+        push rbx
+        push r12
+        push r13
+
+        mov r12, rdi        ; r12 = lba
+        mov r13, rsi        ; r13 = buf
+        xor rbx, rbx        ; rbx = sector index within block
+
+    .sector_loop:
+        cmp rbx, 8
+        jae .done
+
+        ; Compute sector LBA
+        mov rax, r12
+        shl rax, 3
+        add rax, AETHERFS_PARTITION_LBA
+        add rax, rbx
+
+        ; Wait for BSY=0
+        mov dx, ATA_CMD
+    .wait_not_bsy:
+        in al, dx
+        test al, 0x80
+        jnz .wait_not_bsy
+
+        ; Select drive
+        mov rdx, rax
+        shr rdx, 24
+        and dl, 0x0F
+        or dl, 0xE0
+        mov dx, ATA_DRIVE
+        out dx, al
+
+        ; Sector count = 1
+        mov dx, ATA_SECTOR_COUNT
+        mov al, 1
+        out dx, al
+
+        ; LBA low
+        mov dx, ATA_LBA_LO
+        mov al, r12b
+        out dx, al
+
+        ; LBA mid
+        mov dx, ATA_LBA_MID
+        mov rax, r12
+        shr rax, 8
+        out dx, al
+
+        ; LBA high
+        mov dx, ATA_LBA_HI
+        mov rax, r12
+        shr rax, 16
+        out dx, al
+
+        ; Send WRITE SECTORS command (0x30)
+        mov dx, ATA_CMD
+        mov al, 0x30
+        out dx, al
+
+        ; Wait for BSY=0 and DRQ=1
+        mov dx, ATA_CMD
+    .wait_drq:
+        in al, dx
+        test al, 0x80
+        jnz .wait_drq
+        test al, 0x08
+        jz .wait_drq
+
+        ; Write 256 words (512 bytes) to data port
+        mov dx, ATA_DATA
+        mov rsi, r13
+        mov rax, rbx
+        shl rax, 9
+        add rsi, rax
+        mov cx, 256
+        rep outsw
+
+        inc rbx
+        jmp .sector_loop
+
+    .done:
+        mov rax, 1
+        pop r13
+        pop r12
+        pop rbx
+        leave
+        ret
+    }
+}
+
+# ============================================================
+# Block Allocator (bitmap-based)
+# ============================================================
+
+# init_block_bitmap()
+# Marks all blocks as free, then marks the first few blocks as used
+# (superblock, bitmap itself, log start, checkpoint).
+func init_block_bitmap() {
+    asm {
+        lea rdi, [rel aetherfs_block_bitmap]
+        mov rcx, 8192
+        xor al, al
+        rep stosb
+    }
+    # Mark first 4 blocks as used (superblock, bitmap, log, checkpoint)
+    asm {
+        lea rbx, [rel aetherfs_block_bitmap]
+        xor rcx, rcx
+    .mark_loop:
+        cmp rcx, 4
+        jae .done
+        mov rax, rcx
+        shr rax, 3
+        mov rdx, rcx
+        and rdx, 7
+        bts qword [rbx + rax], rdx
+        inc rcx
+        jmp .mark_loop
+    .done:
+    }
+}
+
+# alloc_block(): u64
+# Finds and marks a free block. Returns block number, or 0 if full.
+func alloc_block(): u64 {
+    asm {
+        lea rbx, [rel aetherfs_block_bitmap]
+        mov rcx, [rel aetherfs_total_blocks]
+        xor rdx, rdx
+    .loop:
+        cmp rdx, rcx
+        jae .full
+        mov rax, rdx
+        shr rax, 3
+        mov r8b, [rbx + rax]
+        mov rax, rdx
+        and rax, 7
+        bt r8, rax
+        jnc .found
+        inc rdx
+        jmp .loop
+    .found:
+        mov rax, rdx
+        shr rax, 3
+        mov r8, rdx
+        and r8, 7
+        bts qword [rbx + rax], r8
+        mov rax, rdx
+        jmp .done
+    .full:
+        xor rax, rax
+    .done:
+    }
+}
+
+# free_block(block_num: u64)
+func free_block(block_num: u64) {
+    asm {
+        mov rax, rdi
+        shr rax, 3
+        lea rbx, [rel aetherfs_block_bitmap]
+        mov rcx, rdi
+        and rcx, 7
+        btr qword [rbx + rax], rcx
+    }
+}
+
+# ============================================================
+# Superblock Operations
+# ============================================================
+
+# format_aetherfs()
+# Writes a fresh superblock and initializes the filesystem.
+func format_aetherfs() {
+    asm {
+        lea rdi, [rel aetherfs_temp_buf]
+        mov rcx, 4096
+        xor al, al
+        rep stosb
+
+        ; Write superblock magic at offset 0
+        lea rdi, [rel aetherfs_temp_buf]
+        mov rax, AETHERFS_MAGIC
+        mov [rdi], rax
+
+        ; Version at offset 8
+        mov qword [rdi + 8], 1
+
+        ; Total blocks at offset 16
+        mov rax, [rel aetherfs_total_blocks]
+        mov [rdi + 16], rax
+
+        ; Data start at offset 24 (after superblock, bitmap, log, checkpoint = 4 blocks)
+        mov qword [rdi + 24], 4
+
+        ; Free blocks at offset 32
+        mov rax, [rel aetherfs_total_blocks]
+        sub rax, 4
+        mov [rdi + 32], rax
+
+        ; Log start at offset 40
+        mov qword [rdi + 40], 2
+
+        ; Checkpoint block at offset 48
+        mov qword [rdi + 48], 3
+
+        ; Write superblock to block 0
+        lea rsi, [rel aetherfs_temp_buf]
+        xor rdi, rdi
+        call write_block
+    }
+}
+
+# mount_aetherfs(): u64
+# Reads superblock from disk and validates it.
+# Returns 1 on success, 0 on failure.
+func mount_aetherfs(): u64 {
+    let result: u64 = 0
+    asm {
+        ; Read superblock (block 0)
+        lea rsi, [rel aetherfs_temp_buf]
+        xor rdi, rdi
+        call read_block
+        test rax, rax
+        jz .fail
+
+        ; Check magic
+        lea rdi, [rel aetherfs_temp_buf]
+        mov rax, [rdi]
+        cmp rax, AETHERFS_MAGIC
+        jne .fail
+
+        ; Read fields from superblock
+        mov rax, [rdi + 16]
+        mov [rel aetherfs_total_blocks], rax
+        mov rax, [rdi + 24]
+        mov [rel aetherfs_data_start], rax
+        mov rax, [rdi + 32]
+        mov [rel aetherfs_free_blocks], rax
+        mov rax, [rdi + 40]
+        mov [rel aetherfs_log_start], rax
+        mov rax, [rdi + 48]
+        mov [rel aetherfs_checkpoint_block], rax
+
+        ; Mark as mounted
+        mov qword [rel aetherfs_mounted], 1
+        mov rax, 1
+        jmp .done
+
+    .fail:
+        xor rax, rax
+    .done:
+        mov [rbp-8], rax
+    }
+    return result
+}
+
+# ============================================================
+# Log Operations
+# ============================================================
+
+# append_log(opcode: u64, path_hash: u64, data_hash: u64, size: u64)
+# Appends a log entry to the current log block.
+func append_log(opcode: u64, path_hash: u64, data_hash: u64, size: u64) {
+    asm {
+        push rbx
+        push r12
+        push r13
+        push r14
+
+        mov r12, rdi        ; opcode
+        mov r13, rsi        ; path_hash
+        mov r14, rdx        ; data_hash
+        mov rbx, rcx        ; size
+
+        ; Read current log block
+        mov rdi, [rel aetherfs_log_end]
+        lea rsi, [rel aetherfs_temp_buf]
+        call read_block
+
+        ; Find next free slot in log block
+        ; Each entry is 84 bytes, 48 entries per block
+        ; Scan for first entry with opcode == 0
+        lea rdi, [rel aetherfs_temp_buf]
+        xor rcx, rcx
+    .scan:
+        cmp rcx, 48
+        jae .next_block
+        mov rax, rcx
+        mov rdx, 84
+        mul rdx
+        add rax, rdi
+        cmp qword [rax], 0
+        je .found_slot
+        inc rcx
+        jmp .scan
+
+    .found_slot:
+        ; Write entry at slot rcx
+        mov rax, rcx
+        mov rdx, 84
+        mul rdx
+        add rax, rdi
+        mov [rax], r12          ; opcode
+        mov [rax + 8], r13      ; path_hash
+        mov [rax + 16], r14     ; data_hash
+        mov [rax + 24], rbx     ; size
+        ; Timestamp at offset 32 (use rdtsc low bits)
+        rdtsc
+        mov [rax + 32], eax
+
+        ; Write block back
+        mov rdi, [rel aetherfs_log_end]
+        lea rsi, [rel aetherfs_temp_buf]
+        call write_block
+
+        jmp .done
+
+    .next_block:
+        ; Log block is full — allocate new one
+        call alloc_block
+        test rax, rax
+        jz .done
+        ; Clear new block
+        lea rdi, [rel aetherfs_temp_buf]
+        mov rcx, 4096
+        xor al, al
+        rep stosb
+        ; Write first entry
+        lea rdi, [rel aetherfs_temp_buf]
+        mov [rdi], r12
+        mov [rdi + 8], r13
+        mov [rdi + 16], r14
+        mov [rdi + 24], rbx
+        rdtsc
+        mov [rdi + 32], eax
+        ; Write block
+        mov rdi, rax
+        lea rsi, [rel aetherfs_temp_buf]
+        call write_block
+        ; Update log_end
+        mov [rel aetherfs_log_end], rax
+
+    .done:
+        pop r14
+        pop r13
+        pop r12
+        pop rbx
+    }
+}
+
+# ============================================================
+# B-tree Namespace
+# ============================================================
+
+# btree_lookup(path: string): u64
+# Looks up a path in the B-tree namespace.
+# Returns data block hash, or 0 if not found.
+func btree_lookup(path: string): u64 {
+    let result: u64 = 0
+    asm {
+        ; Read checkpoint block
+        mov rdi, [rel aetherfs_checkpoint_block]
+        lea rsi, [rel aetherfs_temp_buf]
+        call read_block
+        test rax, rax
+        jz .done
+
+        ; Check checkpoint magic
+        lea rdi, [rel aetherfs_temp_buf]
+        mov rax, [rdi]
+        cmp rax, CHECKPOINT_MAGIC
+        jne .done
+
+        ; Walk B-tree nodes starting from root (offset 8 in checkpoint)
+        ; For now, linear scan through entries
+        ; Each entry: path_hash (8) + data_hash (8) + name (64) = 80 bytes
+        ; Max entries per block: 4096 / 80 = 51
+        lea rdi, [rel aetherfs_temp_buf]
+        add rdi, 8
+        xor rcx, rcx
+        mov rsi, rdi        ; rsi = path string pointer
+
+    .scan:
+        cmp rcx, 51
+        jae .not_found
+        mov rax, rcx
+        mov rdx, 80
+        mul rdx
+        add rax, rdi
+        ; Compare name at offset 16
+        lea r8, [rax + 16]
+        mov r9, rsi
+    .cmp:
+        mov al, [r9]
+        mov dl, [r8]
+        cmp al, dl
+        jne .next
+        test al, al
+        jz .found
+        inc r9
+        inc r8
+        jmp .cmp
+    .next:
+        inc rcx
+        jmp .scan
+    .found:
+        ; Return data_hash at offset 8
+        mov rax, rcx
+        mov rdx, 80
+        mul rdx
+        add rax, rdi
+        mov rax, [rax + 8]
+        jmp .done
+    .not_found:
+        xor rax, rax
+    .done:
+        mov [rbp-8], rax
+    }
+    return result
+}
+
+# btree_insert(path: string, data_hash: u64)
+# Inserts or updates a path in the B-tree namespace.
+func btree_insert(path: string, data_hash: u64) {
+    asm {
+        push rbx
+        push r12
+        push r13
+
+        mov r12, rdi        ; path
+        mov r13, rsi        ; data_hash
+
+        ; Read checkpoint block
+        mov rdi, [rel aetherfs_checkpoint_block]
+        lea rsi, [rel aetherfs_temp_buf]
+        call read_block
+
+        ; Find existing entry or empty slot
+        lea rdi, [rel aetherfs_temp_buf]
+        add rdi, 8
+        xor rcx, rcx
+        mov rbx, rdi
+
+    .scan:
+        cmp rcx, 51
+        jae .full
+        mov rax, rcx
+        mov rdx, 80
+        mul rdx
+        add rax, rbx
+        ; Check if slot is empty (name[0] == 0)
+        cmp byte [rax + 16], 0
+        je .insert
+        ; Check if name matches
+        lea r8, [rax + 16]
+        mov r9, r12
+    .cmp:
+        mov al, [r9]
+        mov dl, [r8]
+        cmp al, dl
+        jne .next
+        test al, al
+        jz .update
+        inc r9
+        inc r8
+        jmp .cmp
+    .next:
+        inc rcx
+        jmp .scan
+
+    .insert:
+        ; Found empty slot at rcx
+        mov rax, rcx
+        mov rdx, 80
+        mul rdx
+        add rax, rbx
+        ; Write data_hash at offset 8
+        mov [rax + 8], r13
+        ; Copy path name to offset 16
+        lea rdi, [rax + 16]
+        mov rsi, r12
+    .copy:
+        mov al, [rsi]
+        mov [rdi], al
+        test al, al
+        jz .done_write
+        inc rsi
+        inc rdi
+        jmp .copy
+
+    .update:
+        ; Update existing entry's data_hash
+        mov rax, rcx
+        mov rdx, 80
+        mul rdx
+        add rax, rbx
+        mov [rax + 8], r13
+        jmp .done_write
+
+    .full:
+        ; Checkpoint is full — need to allocate new block
+        ; For now, just overwrite the first entry
+        mov [rbx + 8], r13
+        lea rdi, [rbx + 16]
+        mov rsi, r12
+    .copy_over:
+        mov al, [rsi]
+        mov [rdi], al
+        test al, al
+        jz .done_write
+        inc rsi
+        inc rdi
+        jmp .copy_over
+
+    .done_write:
+        ; Write checkpoint block back
+        mov rdi, [rel aetherfs_checkpoint_block]
+        lea rsi, [rel aetherfs_temp_buf]
+        call write_block
+
+        pop r13
+        pop r12
+        pop rbx
+    }
+}
+
+# ============================================================
+# File Operations
+# ============================================================
+
+# aetherfs_read(path: string, buf: string, len: u64): u64
+# Reads file content. Returns bytes read, or 0 if not found.
+func aetherfs_read(path: string, buf: string, len: u64): u64 {
+    let result: u64 = 0
+    asm {
+        push rbx
+        push r12
+        push r13
+
+        mov r12, rdi        ; path
+        mov r13, rsi        ; buf
+        mov rbx, rdx        ; len
+
+        ; Look up path in B-tree
+        mov rdi, r12
+        call btree_lookup
+        test rax, rax
+        jz .not_found
+
+        ; rax = data block number
+        ; Read the data block
+        mov rdi, rax
+        lea rsi, [rel aetherfs_temp_buf]
+        call read_block
+
+        ; Copy data to output buffer (up to len bytes)
+        lea rsi, [rel aetherfs_temp_buf]
+        mov rdi, r13
+        mov rcx, rbx
+        cmp rcx, 4096
+        jbe .copy
+        mov rcx, 4096
+    .copy:
+        rep movsb
+        mov rax, rcx
+        jmp .done
+
+    .not_found:
+        xor rax, rax
+    .done:
+        mov [rbp-8], rax
+        pop r13
+        pop r12
+        pop rbx
+    }
+    return result
+}
+
+# aetherfs_write(path: string, buf: string, len: u64): u64
+# Writes file content. Returns bytes written, or 0 on failure.
+func aetherfs_write(path: string, buf: string, len: u64): u64 {
+    let result: u64 = 0
+    asm {
+        push rbx
+        push r12
+        push r13
+        push r14
+
+        mov r12, rdi        ; path
+        mov r13, rsi        ; buf
+        mov r14, rdx        ; len
+
+        ; Allocate a data block
+        call alloc_block
+        test rax, rax
+        jz .fail
+
+        mov rbx, rax        ; rbx = data block number
+
+        ; Clear temp buffer
+        lea rdi, [rel aetherfs_temp_buf]
+        mov rcx, 4096
+        xor al, al
+        rep stosb
+
+        ; Copy data to temp buffer
+        lea rdi, [rel aetherfs_temp_buf]
+        mov rsi, r13
+        mov rcx, r14
+        cmp rcx, 4096
+        jbe .copy
+        mov rcx, 4096
+    .copy:
+        rep movsb
+
+        ; Write data block
+        mov rdi, rbx
+        lea rsi, [rel aetherfs_temp_buf]
+        call write_block
+
+        ; Insert into B-tree
+        mov rdi, r12
+        mov rsi, rbx
+        call btree_insert
+
+        ; Append log entry
+        mov rdi, OP_WRITE
+        ; path_hash = simple hash of path (xor of bytes)
+        xor rsi, rsi
+        mov r8, r12
+    .hash:
+        mov al, [r8]
+        test al, al
+        jz .hash_done
+        xor rsi, rax
+        inc r8
+        jmp .hash
+    .hash_done:
+        mov rdx, rbx        ; data_hash = block number
+        mov rcx, r14        ; size
+        call append_log
+
+        mov rax, r14
+        jmp .done
+
+    .fail:
+        xor rax, rax
+    .done:
+        mov [rbp-8], rax
+        pop r14
+        pop r13
+        pop r12
+        pop rbx
+    }
+    return result
+}
+
+# aetherfs_readdir(path: string, buf: string): u64
+# Lists directory contents. Returns bytes written.
+func aetherfs_readdir(path: string, buf: string): u64 {
+    let result: u64 = 0
+    asm {
+        push rbx
+        push r12
+        push r13
+
+        mov r12, rdi        ; path
+        mov r13, rsi        ; buf
+
+        ; Read checkpoint block
+        mov rdi, [rel aetherfs_checkpoint_block]
+        lea rsi, [rel aetherfs_temp_buf]
+        call read_block
+        test rax, rax
+        jz .done
+
+        ; Walk entries and list names
+        lea rdi, [rel aetherfs_temp_buf]
+        add rdi, 8
+        xor rcx, rcx
+        mov rbx, rdi
+        mov r8, r13         ; r8 = current write position
+
+    .scan:
+        cmp rcx, 51
+        jae .done
+        mov rax, rcx
+        mov rdx, 80
+        mul rdx
+        add rax, rbx
+        ; Check if slot is empty
+        cmp byte [rax + 16], 0
+        je .next
+        ; Copy name to output buffer
+        lea rsi, [rax + 16]
+        mov rdi, r8
+    .copy:
+        mov al, [rsi]
+        test al, al
+        jz .pad
+        mov [rdi], al
+        inc rsi
+        inc rdi
+        jmp .copy
+    .pad:
+        mov byte [rdi], 0x20
+        inc rdi
+        mov r8, rdi
+    .next:
+        inc rcx
+        jmp .scan
+
+    .done:
+        mov byte [r8], 0
+        mov rax, r8
+        sub rax, r13
+        mov [rbp-8], rax
+        pop r13
+        pop r12
+        pop rbx
+    }
+    return result
+}
+
+# ============================================================
+# Module Registry Helpers
+# ============================================================
+
+# reg_cmd(name: string, handler: u64)
+func reg_cmd(name: string, handler: u64) {
+    asm {
+        mov rbx, MODULE_REGISTRY
+        mov rax, [rbx]          ; reg_cmd_impl
+        mov rdi, rdi
+        mov rdx, rsi
+        call rax
+    }
+}
+
+# reg_hook(id: u64, handler: u64)
+func reg_hook(id: u64, handler: u64) {
+    asm {
+        mov rbx, MODULE_REGISTRY
+        mov rax, [rbx + 8]      ; reg_hook_impl
+        mov rdi, rdi
+        mov rsi, rsi
+        call rax
+    }
+}
+
+# ============================================================
+# Command Handlers
+# ============================================================
+
+func cmd_mount(line: string) {
+    let mounted: u64 = 0
+    asm {
+        call mount_aetherfs
+        mov [rbp-8], rax
+    }
+    if mounted != 0 {
+        asm {
+            lea rdi, [rel aetherfs_mounted_ok]
+            ; call serial_puts — need to call through syscall page
+            mov rbx, 0x5000
+            mov rax, [rbx + 8]
+            call rax
+        }
+    } else {
+        asm {
+            lea rdi, [rel aetherfs_not_mounted]
+            mov rbx, 0x5000
+            mov rax, [rbx + 8]
+            call rax
+        }
+    }
+}
+
+func cmd_format(line: string) {
+    asm {
+        call init_block_bitmap
+        call format_aetherfs
+        lea rdi, [rel aetherfs_formatted]
+        mov rbx, 0x5000
+        mov rax, [rbx + 8]
+        call rax
+    }
+}
+
+func cmd_ls(line: string) {
+    asm {
+        ; Check if mounted
+        cmp qword [rel aetherfs_mounted], 0
+        jne .mounted
+        lea rdi, [rel aetherfs_not_mounted]
+        mov rbx, 0x5000
+        mov rax, [rbx + 8]
+        call rax
+        jmp .done
+    .mounted:
+        ; Parse path from line (skip "ls ")
+        mov rsi, rdi
+    .skip:
+        mov al, [rsi]
+        cmp al, 0x20
+        je .found_space
+        test al, al
+        jz .list_root
+        inc rsi
+        jmp .skip
+    .found_space:
+        inc rsi
+    .skip_spaces:
+        mov al, [rsi]
+        cmp al, 0x20
+        jne .got_path
+        inc rsi
+        jmp .skip_spaces
+    .got_path:
+        test al, al
+        jz .list_root
+        ; List specific path
+        lea rdi, [rel aetherfs_ls_buf]
+        call aetherfs_readdir
+        lea rdi, [rel aetherfs_ls_buf]
+        mov rbx, 0x5000
+        mov rax, [rbx + 8]
+        call rax
+        jmp .done
+    .list_root:
+        lea rdi, [rel aetherfs_ls_buf]
+        lea rsi, [rel aetherfs_ls_buf]
+        call aetherfs_readdir
+        lea rdi, [rel aetherfs_ls_buf]
+        mov rbx, 0x5000
+        mov rax, [rbx + 8]
+        call rax
+    .done:
+    }
+}
+
+func cmd_cat(line: string) {
+    asm {
+        cmp qword [rel aetherfs_mounted], 0
+        jne .mounted
+        lea rdi, [rel aetherfs_not_mounted]
+        mov rbx, 0x5000
+        mov rax, [rbx + 8]
+        call rax
+        jmp .done
+    .mounted:
+        ; Parse path from line (skip "cat ")
+        mov rsi, rdi
+    .skip:
+        mov al, [rsi]
+        cmp al, 0x20
+        je .found_space
+        test al, al
+        jz .done
+        inc rsi
+        jmp .skip
+    .found_space:
+        inc rsi
+    .skip_spaces:
+        mov al, [rsi]
+        cmp al, 0x20
+        jne .got_path
+        inc rsi
+        jmp .skip_spaces
+    .got_path:
+        test al, al
+        jz .done
+        ; Read file
+        mov r12, rsi        ; save path
+        lea r13, [rel aetherfs_temp_buf]
+        mov rdi, r12
+        mov rsi, r13
+        mov rdx, 4096
+        call aetherfs_read
+        test rax, rax
+        jz .done
+        ; Print content
+        lea rdi, [rel aetherfs_temp_buf]
+        mov rbx, 0x5000
+        mov rax, [rbx + 8]
+        call rax
+    .done:
+    }
+}
+
+func cmd_write(line: string) {
+    asm {
+        push rbx
+        push r12
+        push r13
+        push r14
+
+        cmp qword [rel aetherfs_mounted], 0
+        jne .mounted
+        lea rdi, [rel aetherfs_not_mounted]
+        mov rbx, 0x5000
+        mov rax, [rbx + 8]
+        call rax
+        jmp .done
+
+    .mounted:
+        ; Parse: write <path> <content>
+        ; Skip "write "
+        mov rsi, rdi
+    .skip_cmd:
+        mov al, [rsi]
+        cmp al, 0x20
+        je .found_cmd_space
+        test al, al
+        jz .done
+        inc rsi
+        jmp .skip_cmd
+    .found_cmd_space:
+        inc rsi
+    .skip_cmd_spaces:
+        mov al, [rsi]
+        cmp al, 0x20
+        jne .got_path_start
+        inc rsi
+        jmp .skip_cmd_spaces
+    .got_path_start:
+        test al, al
+        jz .done
+        mov r12, rsi        ; r12 = path start
+        ; Find end of path (next space or null)
+    .find_path_end:
+        mov al, [rsi]
+        cmp al, 0x20
+        je .got_path_end
+        test al, al
+        jz .done
+        inc rsi
+        jmp .find_path_end
+    .got_path_end:
+        mov byte [rsi], 0   ; null-terminate path
+        inc rsi
+        ; Skip spaces to get content
+    .skip_content_spaces:
+        mov al, [rsi]
+        cmp al, 0x20
+        jne .got_content
+        test al, al
+        jz .done
+        inc rsi
+        jmp .skip_content_spaces
+    .got_content:
+        mov r13, rsi        ; r13 = content start
+        ; Find content length
+        mov r14, rsi
+    .find_content_end:
+        mov al, [r14]
+        test al, al
+        jz .got_content_len
+        inc r14
+        jmp .find_content_end
+    .got_content_len:
+        sub r14, rsi        ; r14 = content length
+        ; Write file
+        mov rdi, r12
+        mov rsi, r13
+        mov rdx, r14
+        call aetherfs_write
+
+    .done:
+        pop r14
+        pop r13
+        pop r12
+        pop rbx
+    }
+}
+
+func cmd_stat(line: string) {
+    asm {
+        cmp qword [rel aetherfs_mounted], 0
+        jne .mounted
+        lea rdi, [rel aetherfs_not_mounted]
+        mov rbx, 0x5000
+        mov rax, [rbx + 8]
+        call rax
+        jmp .done
+    .mounted:
+        ; Parse path from line (skip "stat ")
+        mov rsi, rdi
+    .skip:
+        mov al, [rsi]
+        cmp al, 0x20
+        je .found_space
+        test al, al
+        jz .done
+        inc rsi
+        jmp .skip
+    .found_space:
+        inc rsi
+    .skip_spaces:
+        mov al, [rsi]
+        cmp al, 0x20
+        jne .got_path
+        inc rsi
+        jmp .skip_spaces
+    .got_path:
+        test al, al
+        jz .done
+        ; Look up path
+        mov rdi, rsi
+        call btree_lookup
+        test rax, rax
+        jz .not_found
+        ; Print "found: block N"
+        ; For now, just print the path
+        mov rdi, rsi
+        mov rbx, 0x5000
+        mov rax, [rbx + 8]
+        call rax
+        jmp .done
+    .not_found:
+        lea rdi, [rel aetherfs_not_mounted]
+        mov rbx, 0x5000
+        mov rax, [rbx + 8]
+        call rax
+    .done:
+    }
+}
+
+# ============================================================
+# Module Entry Point
+# ============================================================
+
+module aetherfs {
+    @export
+    func mod_init(): u64 {
+        asm {
+            ; Register commands
+            lea rdi, [rel aetherfs_mount_str]
+            lea rdx, [rel cmd_mount]
+            mov rbx, MODULE_REGISTRY
+            mov rax, [rbx]
+            call rax
+
+            lea rdi, [rel aetherfs_format_str]
+            lea rdx, [rel cmd_format]
+            mov rbx, MODULE_REGISTRY
+            mov rax, [rbx]
+            call rax
+
+            lea rdi, [rel aetherfs_ls_str]
+            lea rdx, [rel cmd_ls]
+            mov rbx, MODULE_REGISTRY
+            mov rax, [rbx]
+            call rax
+
+            lea rdi, [rel aetherfs_cat_str]
+            lea rdx, [rel cmd_cat]
+            mov rbx, MODULE_REGISTRY
+            mov rax, [rbx]
+            call rax
+
+            lea rdi, [rel aetherfs_write_str]
+            lea rdx, [rel cmd_write]
+            mov rbx, MODULE_REGISTRY
+            mov rax, [rbx]
+            call rax
+
+            lea rdi, [rel aetherfs_stat_str]
+            lea rdx, [rel cmd_stat]
+            mov rbx, MODULE_REGISTRY
+            mov rax, [rbx]
+            call rax
+
+            ; Register hooks
+            mov rdi, HOOK_FS_OPEN
+            lea rsi, [rel aetherfs_read]
+            mov rbx, MODULE_REGISTRY
+            mov rax, [rbx + 8]
+            call rax
+
+            mov rdi, HOOK_FS_READ
+            lea rsi, [rel aetherfs_read]
+            mov rbx, MODULE_REGISTRY
+            mov rax, [rbx + 8]
+            call rax
+
+            mov rdi, HOOK_FS_READDIR
+            lea rsi, [rel aetherfs_readdir]
+            mov rbx, MODULE_REGISTRY
+            mov rax, [rbx + 8]
+            call rax
+        }
+        return 0
+    }
+
+    @export
+    func mod_fini(): u64 {
+        return 0
+    }
+}

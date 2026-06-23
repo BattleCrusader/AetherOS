@@ -1,7 +1,7 @@
 # Aether OS — Makefile
 # Everything is compiled from Aether source. No raw NASM files.
 
-AETHER    = aether
+AETHER    = /Volumes/Backup/Development/Project_Aether/compiler/build/aether
 OBJCOPY   = x86_64-elf-objcopy
 QEMU      = qemu-system-x86_64
 
@@ -28,6 +28,11 @@ KERNEL_COMBINED = $(BUILD)/kernel.bin
 # Standalone binaries (exclude libaether.ae — it's a library, not a binary)
 BIN_SRCS   = $(filter-out $(SRC_BIN)/libaether.ae,$(wildcard $(SRC_BIN)/*.ae))
 BIN_ELFS   = $(patsubst $(SRC_BIN)/%.ae,$(BUILD)/bin/%.elf,$(BIN_SRCS))
+
+# Kernel modules
+SRC_MODULES = src/modules
+MODULE_SRCS = $(wildcard $(SRC_MODULES)/*/aetherfs.ae)
+MODULE_ELFS = $(patsubst $(SRC_MODULES)/%/aetherfs.ae,$(BUILD)/modules/%.ko,$(MODULE_SRCS))
 
 # Disk image
 DISK_IMG   = $(BUILD)/aether.img
@@ -73,13 +78,23 @@ $(BUILD)/bin/%.elf: $(SRC_BIN)/%.ae | $(BUILD)/bin
 
 bins: $(BIN_ELFS)
 
+modules: $(MODULE_ELFS)
+
+# Build kernel modules
+$(BUILD)/modules:
+	mkdir -p $(BUILD)/modules
+
+$(BUILD)/modules/%.ko: $(SRC_MODULES)/%/aetherfs.ae | $(BUILD)/modules
+	$(AETHER) --target module -O0 $< -o $@
+
 # Build disk image
-$(DISK_IMG): $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_COMBINED) $(BIN_ELFS)
+$(DISK_IMG): $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_COMBINED) $(BIN_ELFS) $(MODULE_ELFS)
 	python3 tools/build_image.py \
 		--stage1 $(STAGE1_BIN) \
 		--stage2 $(STAGE2_BIN) \
 		--kernel $(KERNEL_COMBINED) \
 		--bin-dir $(BUILD)/bin \
+		--module-dir $(BUILD)/modules \
 		--output $@
 
 # Run in QEMU (headless, serial console)

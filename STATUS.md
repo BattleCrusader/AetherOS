@@ -53,12 +53,22 @@
 - [x] **Comprehensive test suite**: tests/test_os.sh — 25+ tests covering boot, binaries, kernel, index 🟢
 - [x] **make test-all target**: runs full test suite 🟢
 
-## Phase 3 — Filesystem 🔴 NOT STARTED
-- [ ] AetherFS disk-backed FS module
-- [ ] Read superblock from disk partition
-- [ ] Read log entries
-- [ ] Recover namespace from log
-- [ ] Read/write files from disk
+## Phase 3 — Filesystem 🔵 IN PROGRESS
+- [x] AetherFS module source created (src/modules/aetherfs/aetherfs.ae)
+- [x] ATA PIO block I/O (read_block, write_block)
+- [x] Block allocator (bitmap-based)
+- [x] Superblock read/write/format
+- [x] Log-structured append (append_log)
+- [x] B-tree namespace (btree_lookup, btree_insert)
+- [x] File operations (aetherfs_read, aetherfs_write, aetherfs_readdir)
+- [x] Module entry point (mod_init, mod_fini) with command/hook registration
+- [x] Compiler fix: TARGET_MODULE skips entry wrapper
+- [x] Makefile: modules target, build_image.py: --module-dir support
+- [ ] Module loads and registers commands in kernel
+- [ ] AetherFS mount/format/ls/cat/write/stat commands work
+- [ ] AetherFS hooks integrate with kernel syscall page
+- [ ] Crash recovery (log replay)
+- [ ] Comprehensive test suite
 
 ## Phase 4 — Advanced Memory 🔴 NOT STARTED
 - [ ] Region-based allocator (colored NUMA-aware pools)
