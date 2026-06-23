@@ -12,7 +12,7 @@
 # to the return address, which goes back to the shell loop.
 # The OS NEVER halts — every fault is either handled or recovered.
 
-const IDT_ADDR = 0x6000
+const IDT_ADDR = 0x1000000
 const IDT_ENTRIES = 256
 const IDT_ENTRY_SIZE = 16
 const IDT_LIMIT = IDT_ENTRIES * IDT_ENTRY_SIZE - 1
@@ -255,8 +255,12 @@ func init_idt() {
         mov dl, IDT_GATE_INTERRUPT
         call set_idt_entry
 
-        mov word [IDT_ADDR - 10], IDT_LIMIT
-        mov qword [IDT_ADDR - 8], IDT_ADDR
-        lidt [IDT_ADDR - 10]
+        ; Set up IDTR structure in a local buffer
+        ; IDTR format: [limit: u16][base: u64] = 10 bytes
+        sub rsp, 16
+        mov word [rsp], IDT_LIMIT
+        mov qword [rsp + 2], IDT_ADDR
+        lidt [rsp]
+        add rsp, 16
     }
 }

@@ -189,6 +189,7 @@ func serial_newline() {
 
 func serial_puthex(val: u64) {
     asm {
+        push rcx
         mov rsi, hex_chars
         mov rcx, 16
         mov r8, rdi
@@ -211,6 +212,7 @@ func serial_puthex(val: u64) {
         mov dx, COM1_DATA
         out dx, al
         loop .loop
+        pop rcx
     }
 }
 
