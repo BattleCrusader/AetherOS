@@ -10,7 +10,10 @@
 #   - Bit manipulation (bts, btr) — page allocator
 #   - Memory operations (rep movsb/stosb) — ELF loader, BSS zero
 #   - Function pointer tables — syscall page, module registry
+#   - IDT setup — fault handlers
 # Everything else is pure Aether.
+
+import "idt.ae"
 
 const COM1_DATA = 0x3F8
 const COM1_IER = 0x3F9
@@ -476,8 +479,15 @@ func exec_binary(path: string): u64 {
         ; Set up argc/argv for the binary (SysV ABI: rdi=argc, rsi=argv)
         xor rdi, rdi        ; argc = 0 (no args)
         xor rsi, rsi        ; argv = NULL
+
+        ; Save kernel context before calling the binary
+        ; If the binary crashes, the fault handler will restore this context
+        lea rdx, [rel .after_binary]
+        mov [rel exec_save_ret], rdx
+        mov [rel exec_save_rsp], rsp
         call rax
 
+    .after_binary:
         xor rax, rax
         jmp .out
 
@@ -2047,7 +2057,11 @@ func main(): u64 {
     serial_puts("  Aether OS v0.1 - Kernel Main\n")
     serial_puts("========================================\n\n")
 
-    serial_puts("[1/5] Initializing page allocator... ")
+    serial_puts("[1/6] Initializing IDT... ")
+    init_idt()
+    serial_puts("OK\n")
+
+    serial_puts("[2/6] Initializing page allocator... ")
     init_pages()
     serial_puts("OK\n")
 

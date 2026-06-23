@@ -3,10 +3,12 @@
 import "../lib/libsys.ae"
 
 func main(inputString: string): u64 {
-    try {
-        puts("hello from echo {inputString}\n")
-    } catch _ {
-        puts("Exception from echo\n")
+    if inputString != 0 {
+        puts("hello from echo ")
+        puts(inputString)
+        puts("\n")
+    } else {
+        puts("hello from echo\n")
     }
     return 0
 }
