@@ -391,10 +391,10 @@ func elf_load_segments(src: u64, dest: u64): u64 {
     .ph_loop:
         cmp r8, rbx
         jae .done
-        mov rax, r15
-        mov rdx, r8
-        mul rcx
-        add rax, r12
+        mov rax, r8         ; rax = current program header index
+        mul rcx             ; rdx:rax = index * phentsize
+        add rax, r15        ; rax = phoff + index * phentsize
+        add rax, r12        ; rax = src + phoff + index * phentsize
         mov r9, rax
         mov eax, [r9]
         cmp eax, 1
