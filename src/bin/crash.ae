@@ -1,0 +1,12 @@
+# Aether OS — Crash Test Binary
+# Deliberately triggers a division by zero to test transaction rollback.
+# If the transaction system works, the shell should recover.
+# If it doesn't, the OS halts.
+
+func main(): u64 {
+    asm {
+        xor rax, rax
+        div rax        ; #DE — division by zero
+    }
+    return 0
+}
