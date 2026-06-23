@@ -73,6 +73,8 @@ func set_idt_entry(vector: u64, handler: u64, gateType: u8) {
 
 # ============================================================
 # Fault Stubs — raw asm, no Aether prologue
+# Interrupt gate handlers are entered directly by the CPU with
+# a specific stack frame. They MUST NOT have a function prologue.
 # ============================================================
 
 asm {
@@ -222,6 +224,7 @@ df_handler:
 # ============================================================
 
 func init_idt() {
+    # Zero the IDT table (256 entries × 16 bytes = 4096 bytes)
     asm {
         mov rdi, IDT_ADDR
         mov rcx, 4096

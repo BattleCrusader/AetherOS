@@ -50,19 +50,23 @@ trans_registry_checkpoint: resb MODULE_REGISTRY_SIZE
 # Saves the current kernel state so we can recover from a crash.
 # afterAddr is the address to jump to on rollback (typically the shell loop).
 func beginTransaction(afterAddr: u64) {
+    # Save CPU context
     asm {
-        ; Save CPU context
         mov [rel trans_save_rsp], rsp
         mov [rel trans_save_ret], rdi
         mov qword [rel trans_active], 1
+    }
 
-        ; Save page allocator bitmap
+    # Save page allocator bitmap
+    asm {
         mov rsi, BITMAP_ADDR
         lea rdi, [rel trans_bitmap_checkpoint]
         mov rcx, BITMAP_SIZE
         rep movsb
+    }
 
-        ; Save module registry
+    # Save module registry
+    asm {
         mov rsi, MODULE_REGISTRY
         lea rdi, [rel trans_registry_checkpoint]
         mov rcx, MODULE_REGISTRY_SIZE

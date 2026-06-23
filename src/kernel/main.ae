@@ -188,70 +188,42 @@ func serial_newline() {
 }
 
 func serial_puthex(val: u64) {
-    asm {
-        push rcx
-        mov rsi, hex_chars
-        mov rcx, 16
-        mov r8, rdi
-    .loop:
-        mov rax, r8
-        mov r9, rcx
-        dec r9
-        shl r9, 2
-        push rcx
-        mov cl, r9b
-        shr rax, cl
-        pop rcx
-        and al, 0x0F
-        mov al, [rsi + rax]
-        mov dx, COM1_LSR
-    .wait:
-        in al, dx
-        test al, LSR_THR_EMPTY
-        jz .wait
-        mov dx, COM1_DATA
-        out dx, al
-        loop .loop
-        pop rcx
+    let hexChars: string = "0123456789ABCDEF"
+    let i: u64 = 0
+    while i < 16 {
+        let shift: u64 = (15 - i) * 4
+        let digit: byte = (val >> shift) & 0x0F
+        serial_putc(hexChars[digit])
+        i = i + 1
     }
 }
 
 func serial_putdec(val: u64) {
-    asm {
-        mov rax, rdi
-        test rax, rax
-        jnz .convert
-        mov dx, COM1_LSR
-    .wait0:
-        in al, dx
-        test al, LSR_THR_EMPTY
-        jz .wait0
-        mov dx, COM1_DATA
-        mov al, '0'
-        out dx, al
-        jmp .done_ret
-    .convert:
-        mov rcx, 0
-        mov rbx, 10
-    .divloop:
-        xor rdx, rdx
-        div rbx
-        add dl, '0'
-        push rdx
-        inc rcx
-        test rax, rax
-        jnz .divloop
-    .printloop:
-        mov dx, COM1_LSR
-    .wait:
-        in al, dx
-        test al, LSR_THR_EMPTY
-        jz .wait
-        mov dx, COM1_DATA
-        pop rax
-        out dx, al
-        loop .printloop
-    .done_ret:
+    if val == 0 {
+        serial_putc('0')
+        return
+    }
+    # Count digits
+    let temp: u64 = val
+    let digits: u64 = 0
+    while temp != 0 {
+        temp = temp / 10
+        digits = digits + 1
+    }
+    # Build divisor = 10^(digits-1)
+    let divisor: u64 = 1
+    let i: u64 = 1
+    while i < digits {
+        divisor = divisor * 10
+        i = i + 1
+    }
+    # Print each digit from most significant
+    temp = val
+    while divisor != 0 {
+        let digit: byte = temp / divisor
+        serial_putc('0' + digit)
+        temp = temp % divisor
+        divisor = divisor / 10
     }
 }
 
