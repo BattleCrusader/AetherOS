@@ -16,6 +16,7 @@ def main():
     parser.add_argument('--stage2', required=True, help='Stage2 loader binary (16KB)')
     parser.add_argument('--kernel', required=True, help='Kernel combined binary')
     parser.add_argument('--bin-dir', required=True, help='Directory containing .elf binaries')
+    parser.add_argument('--module-dir', default=None, help='Directory containing .ko modules')
     parser.add_argument('--output', required=True, help='Output disk image path')
     args = parser.parse_args()
 
@@ -50,6 +51,18 @@ def main():
                 name = fname[:-4]  # strip .elf
                 binaries.append((name, data))
 
+    # Read modules
+    modules = []
+    mod_dir = args.module_dir
+    if mod_dir and os.path.isdir(mod_dir):
+        for fname in sorted(os.listdir(mod_dir)):
+            if fname.endswith('.ko'):
+                fpath = os.path.join(mod_dir, fname)
+                with open(fpath, 'rb') as f:
+                    data = f.read()
+                name = fname[:-3]  # strip .ko
+                modules.append((name, data))
+
     # Calculate sector layout
     # Sector 0: stage1 (MBR)
     # Sectors 1-32: stage2 (16KB)
@@ -76,12 +89,12 @@ def main():
     index_start_sector = kernel_start_sector + kernel_sectors
 
     # Patch the kernel binary with the index sector number
-    # Search for "AETHBINX" marker followed by 4 bytes to patch
+    # Search for "AETHBINX" marker followed by 8 bytes to patch (dq)
     marker = b'AETHBINX'
     patch_offset = kernel.find(marker)
     if patch_offset >= 0:
         patched = bytearray(kernel)
-        struct.pack_into('<I', patched, patch_offset + 8, index_start_sector)
+        struct.pack_into('<Q', patched, patch_offset + 8, index_start_sector)
         kernel = bytes(patched)
         print(f"  Patched bin_index_sector_val at offset {patch_offset} -> {index_start_sector}")
     else:
@@ -101,6 +114,11 @@ def main():
         f.write(index_padded)
         # Write binaries after index
         for name, data in binaries:
+            data_padded = data.ljust(((len(data) + 511) // 512) * 512, b'\x00')
+            f.write(data_padded)
+
+        # Write modules after binaries
+        for name, data in modules:
             data_padded = data.ljust(((len(data) + 511) // 512) * 512, b'\x00')
             f.write(data_padded)
 

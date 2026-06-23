@@ -1,0 +1,270 @@
+# Aether OS — IDT and Fault Handling
+# Sets up an Interrupt Descriptor Table with handlers for:
+#   #DE (0)  - Division Error
+#   #UD (6)  - Invalid Opcode
+#   #DF (8)  - Double Fault
+#   #GP (13) - General Protection Fault
+#   #PF (14) - Page Fault
+#
+# Binary crashes are caught via a saved execution context.
+# Before exec_binary, the kernel saves its stack pointer and a return address.
+# If the binary faults, the handler restores the saved context and jumps
+# to the return address, which goes back to the shell loop.
+# The OS NEVER halts — every fault is either handled or recovered.
+
+const IDT_ADDR = 0x6000
+const IDT_ENTRIES = 256
+const IDT_ENTRY_SIZE = 16
+const IDT_LIMIT = IDT_ENTRIES * IDT_ENTRY_SIZE - 1
+
+const KERNEL_CS = 0x08
+const IDT_GATE_INTERRUPT = 0x8E
+
+const BIN_BASE = 0x2000000
+const BIN_END = 0x2100000
+
+# ============================================================
+# Data section
+# ============================================================
+
+asm {
+    section .data
+global fault_header
+fault_header:  db 0x0D, 0x0A, "*** KERNEL FAULT ***", 0x0D, 0x0A, 0
+global fault_type_str
+fault_type_str: db "Fault type: 0x", 0
+global error_code_str
+error_code_str: db "Error code: 0x", 0
+global fault_addr_str
+fault_addr_str: db "Address: 0x", 0
+global binary_crash
+binary_crash:  db 0x0D, 0x0A, "Binary crashed at 0x", 0
+global halt_str
+halt_str:      db "System halted.", 0x0D, 0x0A, 0
+    section .bss
+; Execution context save area
+; Saved before calling a binary, restored on crash
+global exec_save_rsp
+exec_save_rsp: resq 1
+global exec_save_ret
+exec_save_ret: resq 1
+}
+
+# ============================================================
+# Execution Context Save/Restore
+# ============================================================
+
+# save_exec_context(retAddr: u64)
+# Saves the current kernel stack pointer and a return address.
+# Called before exec_binary calls the binary entry point.
+func save_exec_context(retAddr: u64) {
+    asm {
+        mov [rel exec_save_rsp], rsp
+        mov [rel exec_save_ret], rdi
+    }
+}
+
+# ============================================================
+# IDT Entry Setup
+# ============================================================
+
+func set_idt_entry(vector: u64, handler: u64, gateType: u8) {
+    asm {
+        mov rbx, rdi
+        mov rcx, rsi
+        mov r8b, dl
+
+        mov rax, rbx
+        shl rax, 4
+        add rax, IDT_ADDR
+        mov r9, rax
+
+        mov [r9], cx
+        mov word [r9 + 2], KERNEL_CS
+        mov byte [r9 + 4], 0
+        mov [r9 + 5], r8b
+        shr rcx, 16
+        mov [r9 + 6], cx
+        shr rcx, 16
+        mov [r9 + 8], ecx
+        mov qword [r9 + 12], 0
+    }
+}
+
+# ============================================================
+# Fault Stubs — raw asm, no Aether prologue
+# ============================================================
+
+asm {
+    section .text
+
+; Common fault handler
+; rdi = fault_type, rsi = error_code, rdx = fault_address
+; Stack at entry: [rbx, r12, r13, r14, r15, error_code, ret_addr, cs, rflags, rsp, ss]
+global fault_handler_common
+fault_handler_common:
+    ; Check if fault address is in binary space (0x2000000 - 0x2100000)
+    mov rax, rdx
+    cmp rax, BIN_BASE
+    jb .dump_and_halt
+    cmp rax, BIN_END
+    jae .dump_and_halt
+
+    ; Binary crash — print message
+    lea rdi, [rel binary_crash]
+    call serial_puts
+    mov rdi, rdx
+    call serial_puthex
+    call serial_newline
+
+    ; Restore kernel context: restore rsp and jump to saved return address
+    ; This abandons the interrupt frame and the binary's stack entirely.
+    ; The kernel continues from the saved return address as if the binary
+    ; call never happened.
+    mov rsp, [rel exec_save_rsp]
+    mov rax, [rel exec_save_ret]
+    jmp rax
+
+.dump_and_halt:
+    ; Print fault info
+    lea rdi, [rel fault_header]
+    call serial_puts
+    lea rdi, [rel fault_type_str]
+    call serial_puts
+    mov rdi, rdi
+    call serial_puthex
+    call serial_newline
+    lea rdi, [rel error_code_str]
+    call serial_puts
+    mov rdi, rsi
+    call serial_puthex
+    call serial_newline
+    lea rdi, [rel fault_addr_str]
+    call serial_puts
+    mov rdi, rdx
+    call serial_puthex
+    call serial_newline
+    lea rdi, [rel halt_str]
+    call serial_puts
+    cli
+.halt:
+    hlt
+    jmp .halt
+
+; Page Fault (#PF, vector 14) — has error code
+global pf_handler
+pf_handler:
+    push r15
+    push r14
+    push r13
+    push r12
+    push rbx
+    mov rdi, 1
+    mov rsi, [rsp + 5*8]
+    mov rdx, cr2
+    call fault_handler_common
+    iretq
+
+; General Protection Fault (#GP, vector 13) — has error code
+global gp_handler
+gp_handler:
+    push r15
+    push r14
+    push r13
+    push r12
+    push rbx
+    mov rdi, 2
+    mov rsi, [rsp + 5*8]
+    mov rdx, [rsp + 5*8 + 8]
+    call fault_handler_common
+    iretq
+
+; Division Error (#DE, vector 0) — no error code
+global de_handler
+de_handler:
+    push r15
+    push r14
+    push r13
+    push r12
+    push rbx
+    push 0
+    mov rdi, 3
+    xor rsi, rsi
+    mov rdx, [rsp + 6*8 + 8]
+    call fault_handler_common
+    add rsp, 8
+    iretq
+
+; Invalid Opcode (#UD, vector 6) — no error code
+global ud_handler
+ud_handler:
+    push r15
+    push r14
+    push r13
+    push r12
+    push rbx
+    push 0
+    mov rdi, 4
+    xor rsi, rsi
+    mov rdx, [rsp + 6*8 + 8]
+    call fault_handler_common
+    add rsp, 8
+    iretq
+
+; Double Fault (#DF, vector 8) — has error code
+global df_handler
+df_handler:
+    push r15
+    push r14
+    push r13
+    push r12
+    push rbx
+    mov rdi, 5
+    mov rsi, [rsp + 5*8]
+    mov rdx, [rsp + 5*8 + 8]
+    call fault_handler_common
+    iretq
+}
+
+# ============================================================
+# IDT Initialization
+# ============================================================
+
+func init_idt() {
+    asm {
+        mov rdi, IDT_ADDR
+        mov rcx, 4096
+        xor al, al
+        rep stosb
+    }
+
+    asm {
+        mov rdi, 0
+        lea rsi, [rel de_handler]
+        mov dl, IDT_GATE_INTERRUPT
+        call set_idt_entry
+
+        mov rdi, 6
+        lea rsi, [rel ud_handler]
+        mov dl, IDT_GATE_INTERRUPT
+        call set_idt_entry
+
+        mov rdi, 8
+        lea rsi, [rel df_handler]
+        mov dl, IDT_GATE_INTERRUPT
+        call set_idt_entry
+
+        mov rdi, 13
+        lea rsi, [rel gp_handler]
+        mov dl, IDT_GATE_INTERRUPT
+        call set_idt_entry
+
+        mov rdi, 14
+        lea rsi, [rel pf_handler]
+        mov dl, IDT_GATE_INTERRUPT
+        call set_idt_entry
+
+        mov word [IDT_ADDR - 2], IDT_LIMIT
+        lidt [IDT_ADDR - 2]
+    }
+}

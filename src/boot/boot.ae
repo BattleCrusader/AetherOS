@@ -41,6 +41,7 @@ start:
         mov dword [ebx+4], 0
 
         ; PD entries: 2MB huge pages (PS=1 bit 7)
+        ; Map 64 entries = 128MB (covers kernel at 0x1004000, BIN_BASE at 0x2000000, and beyond)
         mov ecx, 0
         mov ebx, 0x8000
         mov eax, 0x83
@@ -49,7 +50,7 @@ start:
         mov dword [ebx + ecx*8 + 4], 0
         add eax, 0x200000
         inc ecx
-        cmp ecx, 16
+        cmp ecx, 64
         jl .pd_loop
 
         ; Load PML4 address into CR3

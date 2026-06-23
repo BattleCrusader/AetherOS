@@ -11,7 +11,7 @@ Aether is a from-scratch x86_64 operating system built for the long haul. Every 
 - **Every command is a standalone binary.** Shell builtins do not exist. `ls`, `cat`, `echo`, `reboot`, `qubit` — all ELF executables in `/bin/`, resolved via `PATH`, loaded into a scratch exec space at 0x2000000, run, and discarded.
 - **Failures are contained.** A crashed binary returns to the shell. A crashed module doesn't take the kernel with it. Corrupted memory is detected and isolated.
 - **The system improves from use.** Procedures are saved as skills. Memory accumulates across sessions. Boot configuration is text files.
-- **Language: Aether** No stdlib, no libc. The kernel is compiled with `gcc -ffreestanding -nostdlib -mno-red-zone`. See section 10 for build details. Module interface uses flat u64/u32/[u8*+len] convention for stable ABI.
+- **Language: Aether** Everything is written in Aether. The kernel is compiled with `aether --target kernel`, binaries with `aether --target binary`, modules with `aether --target module`. Module interface uses flat u64/u32/[u8*+len] convention for stable ABI.
 - **Full testability** Full test suite to cover everything that's being built
 - **Full documentation** Document everything that's being built in obsidian
 - **Full status capturing** Fully capture the status of the project in STATUS.md
@@ -102,12 +102,57 @@ Replace bitmap with region allocator:
 - Region tracking for leak detection and recovery
 - Colored pages for cache-line optimization (KMP-like)
 
-### 3.3 Capability-Based Access (Phase 3)
+### 3.3 Capability-Based Access (Phase 4)
 
 - Every allocation returns a capability (region ID + offset + permissions)
 - Capabilities are unforgeable tokens (opaque handles, not addresses)
 - Kernel mediates all memory access through capability checking
 - Modules request memory by capability type, not address
+
+---
+
+## 3a. Transaction System (Phase 3)
+
+### 3a.1 Purpose
+
+The kernel must NEVER halt. Every operation — binary execution, module loading, filesystem write — must be recoverable. The transaction system provides a setjmp/longjmp-style save point mechanism that lets the kernel roll back to a known good state after a crash.
+
+### 3a.2 How It Works
+
+```
+Before risky operation:
+  1. Save kernel context (rsp, rbp, callee-saved regs, return address)
+  2. Save page allocator state (bitmap checkpoint)
+  3. Save module registry state
+  4. Execute operation
+
+On crash (fault handler):
+  1. Detect fault address in binary/module space
+  2. Print crash diagnostic
+  3. Restore saved context → jump back to shell loop
+  4. Page allocator and module registry are rolled back
+
+On success:
+  1. Commit the transaction (discard save point)
+  2. Continue normally
+```
+
+### 3a.3 What Gets Saved
+
+| Resource | Save Method | Restore On Crash |
+|----------|-------------|------------------|
+| CPU context (rsp, rbp, regs) | exec_save_rsp, exec_save_ret | Restore rsp, jmp to ret addr |
+| Page allocator bitmap | Bitmap checkpoint (copy of bitmap) | Restore bitmap from checkpoint |
+| Module registry | Registry checkpoint | Restore registry entries |
+| Filesystem state | AetherFS log checkpoint | Replay log from last checkpoint |
+
+### 3a.4 Implementation Phases
+
+1. **Phase 3a.1**: CPU context save/restore (DONE — IDT + exec_save)
+2. **Phase 3a.2**: Page allocator transaction (save/restore bitmap)
+3. **Phase 3a.3**: Module registry transaction
+4. **Phase 3a.4**: Full transaction API (begin/commit/rollback)
+5. **Phase 3a.5**: Wrap all risky operations in transactions
 
 ---
 
@@ -155,7 +200,7 @@ Partition (LBA 4096+ on disk):
 Before AetherFS is loaded, the kernel mounts a minimal in-memory filesystem:
 - Root directory `/` (inode 1)
 - Empty `/bin/`, `/etc/`, `/lib/`, `/tmp/`, `/dev/`
-- Files created by seed.zig at boot (temporary, removed once initrd is working)
+- Files created at boot (temporary, removed once AetherFS is loaded)
 
 ---
 
@@ -256,20 +301,20 @@ Additionally, standalone binaries in `/bin/` can call the syscall `sys_booleval`
 
 ---
 
-## 7. Userspace Runtime: LibAether
+## 7. Userspace Runtime: LibSys
 
 ### 7.1 Purpose
 
-LibAether is the standard runtime library for building `/bin/` ELF executables in Zig. It provides a thin, freestanding wrapper around the Aether syscall page at 0x5000, letting developers write native programs in Zig syntax instead of raw NASM assembly.
+LibSys is the standard runtime library for building `/bin/` ELF executables in Aether. Located at `src/lib/libsys.ae`, it provides thin wrappers around the Aether syscall page at 0x5000 using `sys func` declarations — the compiler generates the indirect call through the function table. No raw asm blocks needed for syscall wrappers.
 
-### 7.2 What LibAether Provides
+### 7.2 What LibSys Provides
 
-```
-// All programs import this single library
-const aether = @import("aether.zig");
+```aether
+import "../lib/libsys"
 
-pub fn main() void {
-    aether.puts("hello, world!\n");
+func main(): u64 {
+    puts("hello, world!\n")
+    return 0
 }
 ```
 
@@ -278,51 +323,36 @@ The library exposes:
 | Function | Syscall | Description |
 |----------|---------|-------------|
 | `putc(c: u8)` | 0x5000 | Write a single character to serial |
-| `puts(s: []const u8)` | 0x5008 | Write a string |
-| `write(ptr: u64, len: u64)` | 0x5008 | Write raw bytes |
-| `open(path: []const u8) u32` | 0x5010 | Resolve path to inode |
-| `read(ino: u32, buf: []u8) usize` | 0x5018 | Read file content |
-| `readdir(ino: u32, buf: []u8) usize` | 0x5020 | List directory entries |
-| `getcwd() u32` | 0x5028 | Get current directory inode |
-| `chdir(ino: u32) void` | 0x5030 | Change directory |
-| `exit() void` | 0x5038 | Return to shell |
-| `booleval(v: u64) u64` | 0x5040 | Evaluate bool (may be quantum) |
+| `puts(s: string)` | 0x5008 | Write a string |
+| `open(path: string): u64` | 0x5010 | Resolve path to inode |
+| `read(ino: u64, buf: string, len: u64): u64` | 0x5018 | Read file content |
+| `readdir(ino: u64, buf: string, len: u64): u64` | 0x5020 | List directory entries |
+| `getcwd(): u64` | 0x5028 | Get current directory inode |
+| `chdir(ino: u64)` | 0x5030 | Change directory |
+| `booleval(v: u64): u64` | 0x5040 | Evaluate bool (may be quantum) |
 
 ### 7.3 Compilation Model
 
-Binaries are compiled with GCC's freestanding x86_64 target:
+Binaries are compiled with `aether --target binary`:
 
-```
-gcc -ffreestanding -nostdlib -mno-red-zone \
-    -c src/bin/ls.c -o build/ls.o \
-    -Isrc/include -O2 -Wall
-ld -nostdlib -T tools/bin.ld -o bin/ls.elf build/ls.o
+```bash
+aether --target binary src/bin/ls.ae -o build/bin/ls.elf
 ```
 
-The resulting ELF is loaded at BIN_BASE (0x2000000). The entry point is `_start` which calls `main()` and then `exit()`.
+The resulting ELF is loaded at BIN_BASE (0x2000000). The entry point is `_start` which calls `main()` and then returns to the shell.
 
-### 7.4 LibAether Source Layout
+### 7.4 LibSys Source Layout
 
 ```
-lib/aether/
-  aether.zig       — Main import: re-exports everything below
-  sys.zig          — Raw syscall wrappers (inline asm, 0x5000 table)
-  io.zig           — puts, putu64, hex formatting
-  fs.zig           — open, read, readdir, getcwd, chdir
-  exit.zig         — exit helper
+src/lib/libsys.ae       — Main library: syscall wrappers + utility functions
 ```
 
 ### 7.5 Constraints
 
 - No heap allocator (stack only for now)
 - No dynamic dispatch
-- No slice-to-pointer coercion that breaks ABI
-- All strings are `[]const u8` (parent provides the buffer)
+- All strings are `string` type (ptr + len)
 - Maximum stack: ~12KB (whatever kernel allocates at BIN_BASE + 0x10000+4096)
-
-### 7.6 Porting Zig to Aether
-
-The long-term goal is to compile the full Zig compiler's freestanding output for Aether. LibAether is the first step — a minimal syscall binding. Over time it grows into a complete runtime (heap allocator, formatted I/O, threading primitives) that lets Aether host its own development toolchain.
 
 ---
 
@@ -380,31 +410,30 @@ Capabilities are stored in the module table slot. Exceeding a capability returns
 ### 10.1 Kernel Compilation
 
 ```
-gcc (or clang), freestanding x86_64 target, no libc
-
-cd build
-gcc -ffreestanding -nostdlib -mno-red-zone -mno-sse -mno-mmx \
-    -c ../src/kernel/*.c ../src/boot/boot.S \
-    -I../src/include -O2 -Wall -Wextra
-ld -nostdlib -T ../tools/kernel.ld -o aether.elf *.o
+aether --target kernel -O0 -L tools/kernel.ld src/kernel/main.ae -o build/aether.elf
+x86_64-elf-objcopy -O binary build/aether.elf build/aether.bin
 ```
 
 ### 10.2 Binary Pipeline
 
-1. C source (`src/bin/*.c`)
-2. Cross-compiled with `-ffreestanding -nostdlib -mno-red-zone`
-3. Linked with `build_mod.py` ELF wrapper → `.elf` at BIN_BASE=0x2000000
-4. Injected into FS at boot via seed files (temporary) or on-disk AetherFS
+1. Aether source (`src/bin/*.ae`)
+2. Compiled with `aether --target binary` → `.elf` at BIN_BASE=0x2000000
+3. Embedded in disk image via `build_image.py`
 
-### 10.3 Disk Image
+### 10.3 Module Pipeline
+
+1. Aether source (`src/modules/*/aetherfs.ae`)
+2. Compiled with `aether --target module` → `.ko`
+3. Embedded in disk image via `build_image.py` with `--module-dir`
+
+### 10.4 Disk Image
 
 ```
 tools/build_image.py:
-  Stage1 + Stage2 + kernel.bin → sectors 0..N
-  tools/build_fs.py formats AetherFS partition at LBA 4096
+  Stage1 + Stage2 + kernel.bin + binaries + modules → sectors 0..N
 ```
 
-### 10.4 Test
+### 10.5 Test
 
 ```
 qemu-system-x86_64 -m 256M -smp 2 -nographic -no-reboot \
@@ -416,24 +445,26 @@ qemu-system-x86_64 -m 256M -smp 2 -nographic -no-reboot \
 ## 11. Milestones
 
 ### Phase 1 — Kernel Core (DONE)
-- [ ] Boot chain (BIOS → stage1 → stage2 → long mode → kernel_main)
-- [ ] Serial I/O (COM1, 115200 8N1)
-- [ ] Physical page allocator (bitmap, 4KB pages)
-- [ ] ELF64 loader (flat-offset, no stdlib, cross-module safe)
-- [ ] Syscall page at 0x5000
-- [ ] Module registry at 0x4000
-- [ ] Thin shell (PATH resolve, ELF exec)
-- [ ] Module loader (.ko ELF load, mod_init call)
-- [ ] In-memory boot FS (empty dirs + seed.zig)
+- [x] Boot chain (BIOS → stage1 → stage2 → long mode → kernel_main)
+- [x] Serial I/O (COM1, 115200 8N1)
+- [x] Physical page allocator (bitmap, 4KB pages)
+- [x] ELF64 loader (flat-offset, no stdlib, cross-module safe)
+- [x] Syscall page at 0x5000
+- [x] Module registry at 0x4000
+- [x] Thin shell (PATH resolve, ELF exec)
+- [x] Module loader (.ko ELF load, mod_init call)
+- [x] In-memory boot FS (empty dirs)
 
-### Phase 2 — Execution (NEXT)
-- [ ] Fix binary exec (NASM hello.elf crashes on syscall)
-- [ ] Verify module loading with a simple .ko
-- [ ] Build standalone commands (ls, cat, echo, shutdown, reboot)
-- [ ] PATH configurable from env variable
-- [ ] Pipe/redirect support
+### Phase 2 — Execution (DONE)
+- [x] Binary exec (--target binary, ret-to-shell)
+- [x] Standalone commands (ls, cat, echo, shutdown, reboot, clear, mem, etc.)
+- [x] ATA PIO disk read for binary loading
+- [x] Binary index loading from disk
+- [x] Shell prompt, readline, tab completion, command dispatch
+- [x] Triple fault fix (cli before kernel call)
+- [x] Comprehensive test suite (25+ tests)
 
-### Phase 3 — Filesystem
+### Phase 3 — Filesystem (IN PROGRESS)
 - [ ] AetherFS disk-backed FS module
 - [ ] Read superblock from disk partition
 - [ ] Read log entries
@@ -474,7 +505,7 @@ qemu-system-x86_64 -m 256M -smp 2 -nographic -no-reboot \
 
 ---
 
-## Appendix: ABI & Coding Conventions for Freestanding C
+## Appendix: ABI & Coding Conventions for Freestanding Aether
 
 ### Cross-Module ABI
 

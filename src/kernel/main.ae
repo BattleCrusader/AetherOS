@@ -10,7 +10,10 @@
 #   - Bit manipulation (bts, btr) — page allocator
 #   - Memory operations (rep movsb/stosb) — ELF loader, BSS zero
 #   - Function pointer tables — syscall page, module registry
+#   - IDT setup — fault handlers
 # Everything else is pure Aether.
+
+import "idt.ae"
 
 const COM1_DATA = 0x3F8
 const COM1_IER = 0x3F9
@@ -101,7 +104,7 @@ hex_chars:    db "0123456789ABCDEF", 0
 ; Unique 12-byte marker: "AETHBINX" + u32 sector number
 ; Build script searches for "AETHBINX" and writes the sector after it
 bin_index_marker: db "AETHBINX"
-bin_index_sector_val: dd 0xFFFFFFFF
+bin_index_sector_val: dq 0xFFFFFFFFFFFFFFFF
 }
 
 # ============================================================
@@ -391,10 +394,10 @@ func elf_load_segments(src: u64, dest: u64): u64 {
     .ph_loop:
         cmp r8, rbx
         jae .done
-        mov rax, r15
-        mov rdx, r8
-        mul rcx
-        add rax, r12
+        mov rax, r8         ; rax = current program header index
+        mul rcx             ; rdx:rax = index * phentsize
+        add rax, r15        ; rax = phoff + index * phentsize
+        add rax, r12        ; rax = src + phoff + index * phentsize
         mov r9, rax
         mov eax, [r9]
         cmp eax, 1
@@ -473,8 +476,18 @@ func exec_binary(path: string): u64 {
         jz .error
 
         ; Entry point is returned in rax from elf_load_segments
+        ; Set up argc/argv for the binary (SysV ABI: rdi=argc, rsi=argv)
+        xor rdi, rdi        ; argc = 0 (no args)
+        xor rsi, rsi        ; argv = NULL
+
+        ; Save kernel context before calling the binary
+        ; If the binary crashes, the fault handler will restore this context
+        lea rdx, [rel .after_binary]
+        mov [rel exec_save_ret], rdx
+        mov [rel exec_save_rsp], rsp
         call rax
 
+    .after_binary:
         xor rax, rax
         jmp .out
 
@@ -1806,6 +1819,8 @@ func fs_open(path: string): u64 {
         jne .bin_next
         test al, al
         jz .bin_found
+        cmp al, '.'
+        je .bin_found
         inc r8
         inc r9
         jmp .bin_cmp
@@ -2042,7 +2057,11 @@ func main(): u64 {
     serial_puts("  Aether OS v0.1 - Kernel Main\n")
     serial_puts("========================================\n\n")
 
-    serial_puts("[1/5] Initializing page allocator... ")
+    serial_puts("[1/6] Initializing IDT... ")
+    init_idt()
+    serial_puts("OK\n")
+
+    serial_puts("[2/6] Initializing page allocator... ")
     init_pages()
     serial_puts("OK\n")
 
