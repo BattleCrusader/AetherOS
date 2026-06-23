@@ -70,6 +70,16 @@
 - [ ] Crash recovery (log replay)
 - [ ] Comprehensive test suite
 
+## Phase 3a — Transaction System 🔵 IN PROGRESS
+- [x] IDT setup with fault handlers (#DE, #UD, #DF, #GP, #PF)
+- [x] CPU context save/restore (exec_save_rsp, exec_save_ret)
+- [x] Binary crash detection (fault address in 0x2000000-0x2100000)
+- [x] Binary crash recovery (restore context, return to shell)
+- [ ] Page allocator transaction (save/restore bitmap)
+- [ ] Module registry transaction
+- [ ] Full transaction API (begin/commit/rollback)
+- [ ] Wrap all risky operations in transactions
+
 ## Phase 4 — Advanced Memory 🔴 NOT STARTED
 - [ ] Region-based allocator (colored NUMA-aware pools)
 - [ ] Capability-based memory access

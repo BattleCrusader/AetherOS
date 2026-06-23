@@ -102,12 +102,57 @@ Replace bitmap with region allocator:
 - Region tracking for leak detection and recovery
 - Colored pages for cache-line optimization (KMP-like)
 
-### 3.3 Capability-Based Access (Phase 3)
+### 3.3 Capability-Based Access (Phase 4)
 
 - Every allocation returns a capability (region ID + offset + permissions)
 - Capabilities are unforgeable tokens (opaque handles, not addresses)
 - Kernel mediates all memory access through capability checking
 - Modules request memory by capability type, not address
+
+---
+
+## 3a. Transaction System (Phase 3)
+
+### 3a.1 Purpose
+
+The kernel must NEVER halt. Every operation — binary execution, module loading, filesystem write — must be recoverable. The transaction system provides a setjmp/longjmp-style save point mechanism that lets the kernel roll back to a known good state after a crash.
+
+### 3a.2 How It Works
+
+```
+Before risky operation:
+  1. Save kernel context (rsp, rbp, callee-saved regs, return address)
+  2. Save page allocator state (bitmap checkpoint)
+  3. Save module registry state
+  4. Execute operation
+
+On crash (fault handler):
+  1. Detect fault address in binary/module space
+  2. Print crash diagnostic
+  3. Restore saved context → jump back to shell loop
+  4. Page allocator and module registry are rolled back
+
+On success:
+  1. Commit the transaction (discard save point)
+  2. Continue normally
+```
+
+### 3a.3 What Gets Saved
+
+| Resource | Save Method | Restore On Crash |
+|----------|-------------|------------------|
+| CPU context (rsp, rbp, regs) | exec_save_rsp, exec_save_ret | Restore rsp, jmp to ret addr |
+| Page allocator bitmap | Bitmap checkpoint (copy of bitmap) | Restore bitmap from checkpoint |
+| Module registry | Registry checkpoint | Restore registry entries |
+| Filesystem state | AetherFS log checkpoint | Replay log from last checkpoint |
+
+### 3a.4 Implementation Phases
+
+1. **Phase 3a.1**: CPU context save/restore (DONE — IDT + exec_save)
+2. **Phase 3a.2**: Page allocator transaction (save/restore bitmap)
+3. **Phase 3a.3**: Module registry transaction
+4. **Phase 3a.4**: Full transaction API (begin/commit/rollback)
+5. **Phase 3a.5**: Wrap all risky operations in transactions
 
 ---
 

@@ -132,5 +132,51 @@ else
 fi
 
 echo ""
+
+# Test 11: IDT setup compiles
+echo "[TEST 11] IDT setup compiles"
+if [ -f src/kernel/idt.ae ]; then
+    echo "  PASS: idt.ae exists ($(wc -l < src/kernel/idt.ae) lines)"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: idt.ae missing"
+    FAIL=$((FAIL + 1))
+fi
+
+# Test 12: Kernel has IDT symbols
+echo "[TEST 12] Kernel IDT symbols"
+if x86_64-elf-objdump -t build/aether.elf 2>/dev/null | grep -q "pf_handler"; then
+    echo "  PASS: pf_handler symbol found"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: pf_handler symbol missing"
+    FAIL=$((FAIL + 1))
+fi
+if x86_64-elf-objdump -t build/aether.elf 2>/dev/null | grep -q "gp_handler"; then
+    echo "  PASS: gp_handler symbol found"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: gp_handler symbol missing"
+    FAIL=$((FAIL + 1))
+fi
+if x86_64-elf-objdump -t build/aether.elf 2>/dev/null | grep -q "exec_save_rsp"; then
+    echo "  PASS: exec_save_rsp symbol found"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: exec_save_rsp symbol missing"
+    FAIL=$((FAIL + 1))
+fi
+
+# Test 13: Module compiles
+echo "[TEST 13] Module compiles"
+if make modules 2>&1 | grep -q "Compilation successful"; then
+    echo "  PASS: aetherfs.ko compiled"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: aetherfs.ko compilation failed"
+    FAIL=$((FAIL + 1))
+fi
+
+echo ""
 echo "=== Results: $PASS/$((PASS + FAIL)) passed, $FAIL failed ==="
 [ $FAIL -eq 0 ]
