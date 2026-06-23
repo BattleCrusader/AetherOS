@@ -14,6 +14,7 @@
 # Everything else is pure Aether.
 
 import "idt.ae"
+import "transaction.ae"
 
 const COM1_DATA = 0x3F8
 const COM1_IER = 0x3F9
@@ -480,15 +481,15 @@ func exec_binary(path: string): u64 {
         xor rdi, rdi        ; argc = 0 (no args)
         xor rsi, rsi        ; argv = NULL
 
-        ; Save kernel context before calling the binary
-        ; If the binary crashes, the fault handler will restore this context
-        lea rdx, [rel .after_binary]
-        mov [rel exec_save_ret], rdx
-        mov [rel exec_save_rsp], rsp
+        ; Begin transaction before calling the binary
+        ; If the binary crashes, the fault handler will roll back
+        lea rdi, [rel .after_binary]
+        call beginTransaction
         call rax
 
     .after_binary:
-        xor rax, rax
+        ; Binary returned normally — commit the transaction
+        call commitTransaction
         jmp .out
 
     .error:

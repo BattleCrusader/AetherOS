@@ -1,0 +1,118 @@
+# Aether OS — Transaction System
+# Provides begin/commit/rollback for risky operations.
+# Before executing a binary or module, the kernel begins a transaction.
+# If a fault occurs, the handler rolls back to the saved state.
+# The OS NEVER halts — every operation is recoverable.
+#
+# What gets saved:
+#   - CPU context (rsp, return address)
+#   - Page allocator bitmap (7375 bytes at BITMAP_ADDR)
+#   - Module registry (5 pointers at MODULE_REGISTRY)
+#
+# Usage:
+#   beginTransaction(afterAddr)  -- save state, set return point
+#   ... risky operation ...
+#   commitTransaction()          -- discard save point
+#   -- OR on fault --
+#   rollbackTransaction()        -- restore saved state, jump to afterAddr
+
+const BITMAP_ADDR = 0xD000
+const BITMAP_SIZE = 7375
+const MODULE_REGISTRY = 0x4000
+const MODULE_REGISTRY_SIZE = 40
+
+# ============================================================
+# Data section
+# ============================================================
+
+asm {
+    section .bss
+; Transaction save areas
+global trans_save_rsp
+trans_save_rsp: resq 1
+global trans_save_ret
+trans_save_ret: resq 1
+global trans_active
+trans_active: resq 1
+; Bitmap checkpoint — copy of the page allocator bitmap
+global trans_bitmap_checkpoint
+trans_bitmap_checkpoint: resb BITMAP_SIZE
+; Module registry checkpoint
+global trans_registry_checkpoint
+trans_registry_checkpoint: resb MODULE_REGISTRY_SIZE
+}
+
+# ============================================================
+# Transaction API
+# ============================================================
+
+# beginTransaction(afterAddr: u64)
+# Saves the current kernel state so we can recover from a crash.
+# afterAddr is the address to jump to on rollback (typically the shell loop).
+func beginTransaction(afterAddr: u64) {
+    asm {
+        ; Save CPU context
+        mov [rel trans_save_rsp], rsp
+        mov [rel trans_save_ret], rdi
+        mov qword [rel trans_active], 1
+
+        ; Save page allocator bitmap
+        mov rsi, BITMAP_ADDR
+        lea rdi, [rel trans_bitmap_checkpoint]
+        mov rcx, BITMAP_SIZE
+        rep movsb
+
+        ; Save module registry
+        mov rsi, MODULE_REGISTRY
+        lea rdi, [rel trans_registry_checkpoint]
+        mov rcx, MODULE_REGISTRY_SIZE
+        rep movsb
+    }
+}
+
+# commitTransaction()
+# Discards the saved state — the operation succeeded.
+func commitTransaction() {
+    asm {
+        mov qword [rel trans_active], 0
+    }
+}
+
+# rollbackTransaction()
+# Restores the saved state and jumps to the saved return address.
+# Called by the fault handler when a binary crashes.
+# This function NEVER returns — it restores rsp and jumps.
+func rollbackTransaction() {
+    asm {
+        ; Restore page allocator bitmap
+        lea rsi, [rel trans_bitmap_checkpoint]
+        mov rdi, BITMAP_ADDR
+        mov rcx, BITMAP_SIZE
+        rep movsb
+
+        ; Restore module registry
+        lea rsi, [rel trans_registry_checkpoint]
+        mov rdi, MODULE_REGISTRY
+        mov rcx, MODULE_REGISTRY_SIZE
+        rep movsb
+
+        ; Clear active flag
+        mov qword [rel trans_active], 0
+
+        ; Restore CPU context and jump to saved return address
+        mov rsp, [rel trans_save_rsp]
+        mov rax, [rel trans_save_ret]
+        jmp rax
+    }
+}
+
+# isTransactionActive(): u64
+# Returns 1 if a transaction is in progress, 0 otherwise.
+func isTransactionActive(): u64 {
+    let result: u64 = 0
+    asm {
+        mov rax, [rel trans_active]
+        mov [rbp-8], rax
+    }
+    return result
+}
