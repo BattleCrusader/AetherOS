@@ -1,0 +1,80 @@
+# Aether OS — Serial I/O
+# Port I/O requires asm blocks — this is the only file with asm.
+# Exports: serial_init(), serial_puts(s), serial_putc(c)
+
+const COM1_DATA = 0x3F8
+const COM1_IER = 0x3F9
+const COM1_LCR = 0x3FB
+const COM1_MCR = 0x3FC
+const COM1_LSR = 0x3FD
+const LSR_THR_EMPTY = 0x20
+
+func serial_init() {
+    asm {
+        mov dx, COM1_IER
+        xor al, al
+        out dx, al
+        mov dx, COM1_LCR
+        mov al, 0x80
+        out dx, al
+        mov dx, COM1_DATA
+        mov al, 0x01
+        out dx, al
+        mov dx, COM1_IER
+        xor al, al
+        out dx, al
+        mov dx, COM1_LCR
+        mov al, 0x03
+        out dx, al
+        mov dx, COM1_MCR
+        mov al, 0x03
+        out dx, al
+        mov dx, 0x3FA
+        mov al, 0x07
+        out dx, al
+        mov dx, COM1_LSR
+    .drain:
+        in al, dx
+        test al, 1
+        jz .done
+        mov dx, COM1_DATA
+        in al, dx
+        mov dx, COM1_LSR
+        jmp .drain
+    .done:
+    }
+}
+
+func serial_putc(c: byte) {
+    asm {
+        mov dx, COM1_LSR
+    .wait:
+        in al, dx
+        test al, LSR_THR_EMPTY
+        jz .wait
+        mov dx, COM1_DATA
+        mov al, dil
+        out dx, al
+    }
+}
+
+func serial_puts(s: string) {
+    asm {
+        mov rsi, rdi
+    .loop:
+        lodsb
+        test al, al
+        jz .done
+        mov ah, al
+        mov dx, COM1_LSR
+    .wait:
+        in al, dx
+        test al, LSR_THR_EMPTY
+        jz .wait
+        mov al, ah
+        mov dx, COM1_DATA
+        out dx, al
+        jmp .loop
+    .done:
+    }
+}

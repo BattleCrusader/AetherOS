@@ -1,7 +1,7 @@
 # Aether OS — Makefile
 # Everything is compiled from Aether source. No raw NASM files.
 
-AETHER    = /Volumes/Backup/Development/Project_Aether/compiler/build/aether
+AETHER    = /Users/cyberdeth/.local/bin/aether
 OBJCOPY   = x86_64-elf-objcopy
 QEMU      = qemu-system-x86_64
 
@@ -42,7 +42,7 @@ DISK_IMG   = $(BUILD)/aether.img
 all: $(DISK_IMG)
 
 $(BUILD):
-	mkdir -p $(BUILD)
+	mkdir -p $(BUILD) /tmp/kernel
 
 # Stage 1 MBR (flat binary, 512 bytes) — compiled from Aether
 $(STAGE1_BIN): $(SRC_BOOT)/stage1.ae | $(BUILD)

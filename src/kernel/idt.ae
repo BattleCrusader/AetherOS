@@ -183,7 +183,7 @@ de_handler:
     push 0
     mov rdi, 3
     xor rsi, rsi
-    mov rdx, [rsp + 6*8 + 8]
+    mov rdx, [rsp + 6*8]
     call fault_handler_common
     add rsp, 8
     iretq
@@ -199,7 +199,7 @@ ud_handler:
     push 0
     mov rdi, 4
     xor rsi, rsi
-    mov rdx, [rsp + 6*8 + 8]
+    mov rdx, [rsp + 6*8]
     call fault_handler_common
     add rsp, 8
     iretq
