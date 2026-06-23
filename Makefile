@@ -25,8 +25,8 @@ KERNEL_BIN = $(BUILD)/aether.bin
 # Final combined kernel (boot.bin padded to 16KB + aether.bin)
 KERNEL_COMBINED = $(BUILD)/kernel.bin
 
-# Standalone binaries (exclude libaether.ae — it's a library, not a binary)
-BIN_SRCS   = $(filter-out $(SRC_BIN)/libaether.ae,$(wildcard $(SRC_BIN)/*.ae))
+# Standalone binaries (exclude libsys.ae — it's a library, not a binary)
+BIN_SRCS   = $(filter-out $(SRC_BIN)/libsys.ae,$(wildcard $(SRC_BIN)/*.ae))
 BIN_ELFS   = $(patsubst $(SRC_BIN)/%.ae,$(BUILD)/bin/%.elf,$(BIN_SRCS))
 
 # Kernel modules

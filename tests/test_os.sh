@@ -85,13 +85,13 @@ for stage in stage1 stage2 boot; do
     fi
 done
 
-# Test 7: libaether compiles
-echo "[TEST 7] libaether compiles"
-if [ -f src/lib/libaether.ae ]; then
-    echo "  PASS: libaether.ae exists ($(wc -l < src/lib/libaether.ae) lines)"
+# Test 7: libsys compiles
+echo "[TEST 7] libsys compiles"
+if [ -f src/lib/libsys.ae ]; then
+    echo "  PASS: libsys.ae exists ($(wc -l < src/lib/libsys.ae) lines)"
     PASS=$((PASS + 1))
 else
-    echo "  FAIL: libaether.ae missing"
+    echo "  FAIL: libsys.ae missing"
     FAIL=$((FAIL + 1))
 fi
 

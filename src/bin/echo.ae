@@ -1,6 +1,6 @@
 # Aether OS — echo command
 # Standalone binary
-import "../lib/libaether.ae"
+import "../lib/libsys.ae"
 
 func main(inputString: string): u64 {
     try {

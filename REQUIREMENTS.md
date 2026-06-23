@@ -256,16 +256,16 @@ Additionally, standalone binaries in `/bin/` can call the syscall `sys_booleval`
 
 ---
 
-## 7. Userspace Runtime: LibAether
+## 7. Userspace Runtime: LibSys
 
 ### 7.1 Purpose
 
-LibAether is the standard runtime library for building `/bin/` ELF executables in Aether. Located at `src/lib/libaether.ae`, it provides thin wrappers around the Aether syscall page at 0x5000 using `sys func` declarations — the compiler generates the indirect call through the function table. No raw asm blocks needed for syscall wrappers.
+LibSys is the standard runtime library for building `/bin/` ELF executables in Aether. Located at `src/lib/libsys.ae`, it provides thin wrappers around the Aether syscall page at 0x5000 using `sys func` declarations — the compiler generates the indirect call through the function table. No raw asm blocks needed for syscall wrappers.
 
-### 7.2 What LibAether Provides
+### 7.2 What LibSys Provides
 
 ```aether
-import "../lib/libaether"
+import "../lib/libsys"
 
 func main(): u64 {
     puts("hello, world!\n")
@@ -296,10 +296,10 @@ aether --target binary src/bin/ls.ae -o build/bin/ls.elf
 
 The resulting ELF is loaded at BIN_BASE (0x2000000). The entry point is `_start` which calls `main()` and then returns to the shell.
 
-### 7.4 LibAether Source Layout
+### 7.4 LibSys Source Layout
 
 ```
-src/lib/libaether.ae       — Main library: syscall wrappers + utility functions
+src/lib/libsys.ae       — Main library: syscall wrappers + utility functions
 ```
 
 ### 7.5 Constraints

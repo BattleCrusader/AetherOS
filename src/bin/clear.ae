@@ -1,6 +1,6 @@
 # Aether OS — clear command
 # Standalone binary
-import "../lib/libaether.ae"
+import "../lib/libsys.ae"
 
 func main(): u64 {
     puts("hello from clear\n")
